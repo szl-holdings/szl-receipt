@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "szl-receipt"
+version = "0.1.0"
+description = "Shared signed-receipt library for SZL components — DSSE/ECDSA-P256-SHA256, cosign-compatible, with UNSIGNED-honest fallback."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography>=42",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/szl_receipt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
