@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "szl-receipt"
-version = "0.1.0"
-description = "Shared signed-receipt library for SZL components — DSSE/ECDSA-P256-SHA256, cosign-compatible, with UNSIGNED-honest fallback."
+version = "0.2.0"
+description = "Shared signed-receipt library for SZL components — DSSE/ECDSA-P256-SHA256 signing (cosign-compatible, UNSIGNED-honest fallback) plus in-toto/SLSA-shaped attestation and EU AI Act / NIST AI RMF compliance-evidence mapping."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"

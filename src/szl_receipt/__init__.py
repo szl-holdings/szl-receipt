@@ -39,10 +39,18 @@ Save the public key to ``organ.pub``, then::
 """
 from __future__ import annotations
 
+from . import attest
 from ._sign import PAYLOAD_TYPE, generate_keypair
+from .attest import (
+    IN_TOTO_STATEMENT_TYPE,
+    build_statement,
+    compliance_evidence,
+    slsa_predicate,
+    verify_statement,
+)
 from .receipt import Receipt, sign_receipt, verify_receipt
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "SZL Contributors"
 __license__ = "Apache-2.0"
 
@@ -52,4 +60,11 @@ __all__ = [
     "verify_receipt",
     "generate_keypair",
     "PAYLOAD_TYPE",
+    # standards-interop + compliance-evidence attestation (shared home)
+    "attest",
+    "build_statement",
+    "slsa_predicate",
+    "compliance_evidence",
+    "verify_statement",
+    "IN_TOTO_STATEMENT_TYPE",
 ]
