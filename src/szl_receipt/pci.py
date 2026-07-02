@@ -22,9 +22,9 @@ receipt into an **offline-verifiable governance warrant**:
 Both bindings ride inside the sanctioned PCGI ``extra`` extension point, so they
 are part of the signed body digest (tamper-evident) WITHOUT forking the
 battle-tested spine. A PCI receipt is first verified by the existing
-:func:`szl_receipt.sdk.verify_emitted_receipt`; PCI then re-checks Λ, the spec
-tier guard, and energy honesty. Keyless emission stays UNSIGNED-honest — the
-verifier never returns a fake pass.
+:func:`szl_receipt.sdk.verify_receipt`; PCI then re-checks Λ, the spec tier
+guard, attestation honesty, and energy honesty. Keyless emission stays
+UNSIGNED-honest — the verifier never returns a fake pass.
 
 Anchoring prior art (cited, not claimed as ours):
   * G. Necula, "Proof-Carrying Code", POPL 1997, doi:10.1145/263699.263712.
