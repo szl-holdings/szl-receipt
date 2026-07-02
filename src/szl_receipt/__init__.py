@@ -39,7 +39,7 @@ Save the public key to ``organ.pub``, then::
 """
 from __future__ import annotations
 
-from . import attest
+from . import attest, sdk
 from ._sign import PAYLOAD_TYPE, generate_keypair
 from .attest import (
     IN_TOTO_STATEMENT_TYPE,
@@ -49,6 +49,14 @@ from .attest import (
     verify_statement,
 )
 from .receipt import Receipt, sign_receipt, verify_receipt
+from .sdk import (
+    DOCTRINE,
+    PCGI_BUILD_TYPE,
+    PCGI_PREDICATE_TYPE,
+    PCGI_SCHEMA,
+    emit_receipt,
+)
+from .sdk import verify_receipt as verify_emitted_receipt
 
 __version__ = "0.2.0"
 __author__ = "SZL Contributors"
@@ -67,4 +75,12 @@ __all__ = [
     "compliance_evidence",
     "verify_statement",
     "IN_TOTO_STATEMENT_TYPE",
+    # PCGI one-call unifier (the spine) — emit_receipt / verify_emitted_receipt
+    "sdk",
+    "emit_receipt",
+    "verify_emitted_receipt",
+    "PCGI_SCHEMA",
+    "PCGI_PREDICATE_TYPE",
+    "PCGI_BUILD_TYPE",
+    "DOCTRINE",
 ]
