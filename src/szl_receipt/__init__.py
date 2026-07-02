@@ -39,7 +39,7 @@ Save the public key to ``organ.pub``, then::
 """
 from __future__ import annotations
 
-from . import attest, sdk
+from . import attest, lambda_gate, sdk
 from ._sign import PAYLOAD_TYPE, generate_keypair
 from .attest import (
     IN_TOTO_STATEMENT_TYPE,
@@ -57,6 +57,15 @@ from .sdk import (
     emit_receipt,
 )
 from .sdk import verify_receipt as verify_emitted_receipt
+from . import pci
+from .lambda_gate import LambdaVerdict, evaluate as lambda_evaluate, lambda_score
+from .pci import (
+    PCI_PROFILE,
+    PCIResult,
+    SpecRef,
+    emit_pci_receipt,
+    verify_pci_receipt,
+)
 
 __version__ = "0.2.0"
 __author__ = "SZL Contributors"
@@ -83,4 +92,16 @@ __all__ = [
     "PCGI_PREDICATE_TYPE",
     "PCGI_BUILD_TYPE",
     "DOCTRINE",
+    # Λ aggregator kernel (governance roll-up)
+    "lambda_gate",
+    "lambda_score",
+    "lambda_evaluate",
+    "LambdaVerdict",
+    # Proof-Carrying Inference (PCI) profile — Λ-verdict + σ spec, offline-verifiable
+    "pci",
+    "emit_pci_receipt",
+    "verify_pci_receipt",
+    "PCIResult",
+    "SpecRef",
+    "PCI_PROFILE",
 ]
