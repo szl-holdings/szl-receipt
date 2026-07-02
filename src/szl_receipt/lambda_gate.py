@@ -50,7 +50,10 @@ class LambdaGateError(ValueError):
 def _as_real(value: object, what: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise LambdaGateError(f"{what} is not a real number: {value!r}")
-    return float(value)
+    fv = float(value)
+    if not math.isfinite(fv):
+        raise LambdaGateError(f"{what} is not finite: {value!r}")
+    return fv
 
 
 def lambda_score(

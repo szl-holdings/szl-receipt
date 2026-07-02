@@ -161,6 +161,120 @@ def test_tier_guard_refuses_overclaims():
         assert res.ok is False and res.reason == expected
 
 
+def test_tier_guard_scans_invariants_too():
+    # An exact overclaim token hidden in `invariants` (not `claims`) is refused.
+    priv, pub = generate_keypair()
+    bad = SpecRef().to_dict()
+    bad["invariants"] = ["lambda-uniqueness-unconditional"]
+    bad["locked_count"] = 1
+    extra = {
+        "pci_profile": PCI_PROFILE, "lambda_verdict": _good_verdict().to_dict(),
+        "spec": bad, "attestation": {"status": "UNAVAILABLE"},
+    }
+    r = emit_receipt(model_id="m", input_digest="i", output_digest="o",
+                     policy_id="p", organ="a11oy", private_key_pem=priv, extra=extra)
+    res = verify_pci_receipt(r, public_key_pem=pub)
+    assert res.ok is False and res.reason == "overclaim-conjecture1"
+
+
+def test_reworded_overclaim_is_refused_by_allowlist():
+    # A reworded overclaim that dodges the exact denylist still cannot pass —
+    # claims are allowlisted, so anything unrecognised is refused.
+    priv, pub = generate_keypair()
+    r = emit_pci_receipt(
+        model_id="m", input_digest="i", output_digest="o", policy_id="p",
+        lambda_verdict=_good_verdict(),
+        spec=SpecRef(claims=["lambda-uniqueness-proven-unconditionally"]),
+        organ="a11oy", private_key_pem=priv,
+    )
+    res = verify_pci_receipt(r, public_key_pem=pub)
+    assert res.ok is False
+    assert res.reason.startswith("claim-not-allowlisted:")
+
+
+def test_allowlisted_claim_passes():
+    priv, pub = generate_keypair()
+    r = emit_pci_receipt(
+        model_id="m", input_digest="i", output_digest="o", policy_id="p",
+        lambda_verdict=_good_verdict(),
+        spec=SpecRef(claims=["lambda-advisory", "non-compensatory"]),
+        organ="a11oy", private_key_pem=priv,
+    )
+    res = verify_pci_receipt(r, public_key_pem=pub)
+    assert res.ok is True
+
+
+def test_emit_refuses_unverifiable_attestation():
+    # τ is roadmap: minting a "VERIFIED" enclave we cannot check is refused.
+    priv, _ = generate_keypair()
+    with pytest.raises(ValueError):
+        emit_pci_receipt(
+            model_id="m", input_digest="i", output_digest="o", policy_id="p",
+            lambda_verdict=_good_verdict(),
+            attestation={"status": "VERIFIED", "kind": "sgx", "quote": "deadbeef"},
+            organ="a11oy", private_key_pem=priv,
+        )
+
+
+def test_verify_refuses_handcrafted_verified_attestation():
+    priv, pub = generate_keypair()
+    extra = {
+        "pci_profile": PCI_PROFILE, "lambda_verdict": _good_verdict().to_dict(),
+        "spec": SpecRef().to_dict(),
+        "attestation": {"status": "VERIFIED", "kind": "sgx", "quote": "deadbeef"},
+    }
+    r = emit_receipt(model_id="m", input_digest="i", output_digest="o",
+                     policy_id="p", organ="a11oy", private_key_pem=priv, extra=extra)
+    res = verify_pci_receipt(r, public_key_pem=pub)
+    assert res.ok is False and res.reason == "attestation-unverifiable"
+
+
+def test_emit_refuses_non_finite_energy():
+    priv, _ = generate_keypair()
+    with pytest.raises(ValueError):
+        emit_pci_receipt(
+            model_id="m", input_digest="i", output_digest="o", policy_id="p",
+            lambda_verdict=_good_verdict(), energy_joules=float("nan"),
+            organ="a11oy", private_key_pem=priv,
+        )
+
+
+def test_verify_refuses_handcrafted_nan_energy():
+    # A joules key that isn't a finite real is a fabricated measurement.
+    priv, pub = generate_keypair()
+    extra = {
+        "pci_profile": PCI_PROFILE, "lambda_verdict": _good_verdict().to_dict(),
+        "spec": SpecRef().to_dict(), "attestation": {"status": "UNAVAILABLE"},
+    }
+    r = emit_receipt(
+        model_id="m", input_digest="i", output_digest="o", policy_id="p",
+        organ="a11oy", private_key_pem=priv, energy_joules=float("nan"), extra=extra,
+    )
+    res = verify_pci_receipt(r, public_key_pem=pub)
+    assert res.ok is False and res.reason == "energy-malformed"
+
+
+def test_lambda_rejects_non_finite():
+    with pytest.raises(lg.LambdaGateError):
+        lg.lambda_score({"a": float("nan")}, {"a": 1.0})
+    with pytest.raises(lg.LambdaGateError):
+        lg.evaluate({"a": 0.5}, {"a": 1.0}, theta=float("inf"))
+
+
+def test_locked_count_must_match_invariants():
+    priv, pub = generate_keypair()
+    spec = SpecRef().to_dict()
+    spec["locked_count"] = 8            # lie: invariants list is empty
+    extra = {
+        "pci_profile": PCI_PROFILE, "lambda_verdict": _good_verdict().to_dict(),
+        "spec": spec, "attestation": {"status": "UNAVAILABLE"},
+    }
+    r = emit_receipt(model_id="m", input_digest="i", output_digest="o",
+                     policy_id="p", organ="a11oy", private_key_pem=priv, extra=extra)
+    res = verify_pci_receipt(r, public_key_pem=pub)
+    assert res.ok is False and res.reason == "spec-locked-count-mismatch"
+
+
 def test_verify_is_graceful_on_garbage():
     assert verify_pci_receipt(None).ok is False
     assert verify_pci_receipt({}).ok is False

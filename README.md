@@ -126,13 +126,22 @@ Runnable end-to-end demo: [`examples/proof_carrying_inference.py`](examples/proo
   proof of correctness, safety, or conformity.
 - **Λ recomputed, not trusted.** The verifier recomputes `Λ = Π xᵢ^wᵢ` from the
   bound scores; a producer's wrong Λ fails offline (`lambda-recompute-mismatch`).
-- **Tier guard refuses overclaims.** `verify_pci_receipt` rejects any receipt
-  that claims a machine-checked non-theorem — unconditional Λ-uniqueness
-  (**Conjecture 1, machine-checked false as stated** → `overclaim-conjecture1`)
-  or unconditional Khipu BFT safety (**Conjecture 2, open** →
-  `overclaim-conjecture2`). Λ-uniqueness is **conditional** (Theorem U).
+- **Tier guard refuses overclaims — by allowlist, not denylist.** Spec `claims`
+  are validated against a fixed allowlist of honest tokens, so no overclaim
+  survives *however it is reworded*. The specific machine-checked non-theorems —
+  unconditional Λ-uniqueness (**Conjecture 1, false as stated** →
+  `overclaim-conjecture1`) and unconditional Khipu BFT safety (**Conjecture 2,
+  open** → `overclaim-conjecture2`) — are refused with their exact reason code,
+  scanned across `claims` **and** `invariants`. Λ-uniqueness is **conditional**
+  (Theorem U). `locked_count` is derived from the invariant list so it cannot
+  drift.
 - **Energy is measured-or-`UNAVAILABLE`.** `require_measured_energy=True` refuses
-  a receipt lacking a real joule reading — a joule is never fabricated.
+  a receipt lacking a real joule reading, and a non-finite `joules` value is
+  refused as `energy-malformed` — a joule is never fabricated.
+- **Attestation (τ) is honest-only.** Confidential-execution verification is not
+  yet implemented, so only the `UNAVAILABLE` placeholder passes; a receipt
+  asserting a "verified" enclave we cannot check is refused
+  (`attestation-unverifiable`).
 - **Keyless stays UNSIGNED-honest** — `verify_pci_receipt` returns
   `unsigned-honest`, never a fake pass.
 

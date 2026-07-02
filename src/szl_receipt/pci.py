@@ -36,8 +36,9 @@ SZL corpus concept DOI: 10.5281/zenodo.19944926.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, Mapping, Optional, Sequence, Tuple
 
 from . import lambda_gate
 from .attest import UNAVAILABLE
@@ -51,12 +52,32 @@ PCI_PROFILE = "https://a-11-oy.com/pci/receipt/v1"
 #: Tolerance for the offline Λ recomputation check.
 LAMBDA_RECOMPUTE_TOL = 1e-9
 
-#: Default machine-checked reference (lutar-lean locked tier).
+#: Default machine-checked reference (lutar-lean, the locked tier). A POINTER to
+#: a real repo, NOT an inlined proof; specific invariant IDs are bound only when
+#: a producer has actually confirmed them (default: none — never fabricated).
 DEFAULT_SPEC_REF = "github.com/szl-holdings/lutar-lean"
-LOCKED_INVARIANTS: Tuple[str, ...] = ("F1", "F4", "F7", "F18", "F22", "TheoremU")
 
-#: Overclaims the tier guard REFUSES to certify (machine-checked non-theorems).
-#: Maps a forbidden claim token -> the verification reason returned on refusal.
+#: Spec tiers a PCI receipt may honestly declare.
+ALLOWED_TIERS: FrozenSet[str] = frozenset({"locked", "draft"})
+
+#: The ONLY claim tokens a PCI receipt may bind. This is an allowlist BY DESIGN:
+#: the tier guard refuses everything else, so no overclaim — however reworded —
+#: can ride through. Every token here is an honest, non-overclaiming statement.
+ALLOWED_CLAIMS: FrozenSet[str] = frozenset({
+    "lambda-uniqueness-conditional",    # Theorem U — CONDITIONAL, machine-checked
+    "lambda-advisory",                  # Λ is an advisory gate, never a proof
+    "non-compensatory",                 # any zeroed axis collapses Λ to 0
+    "energy-measured-or-unavailable",   # a joule is never fabricated
+    "unsigned-honest",                  # keyless never returns a fake pass
+})
+
+#: Referenced invariant IDs must be short identifier tokens (not prose), so an
+#: overclaim cannot be smuggled in as a free-text "invariant".
+_INVARIANT_RE = re.compile(r"^[A-Za-z0-9_.:\-]{1,40}$")
+
+#: Overclaims the tier guard REFUSES to certify (machine-checked non-theorems),
+#: scanned across BOTH ``claims`` and ``invariants`` for the specific reason code.
+#: Maps a forbidden token -> the verification reason returned on refusal.
 FORBIDDEN_CLAIMS: Dict[str, str] = {
     "lambda-uniqueness-unconditional": "overclaim-conjecture1",
     "khipu-bft-safety-unconditional": "overclaim-conjecture2",
@@ -67,22 +88,24 @@ FORBIDDEN_CLAIMS: Dict[str, str] = {
 class SpecRef:
     """A reference to the machine-checked spec (``σ``) the receipt is modelled by.
 
-    ``claims`` lets a producer state what it relies on; the verifier's tier guard
-    rejects any claim in :data:`FORBIDDEN_CLAIMS`, so an honest producer can
-    never accidentally certify a machine-checked non-theorem.
+    ``claims`` states what the producer relies on and is validated against the
+    :data:`ALLOWED_CLAIMS` allowlist by the verifier's tier guard, so a producer
+    can never certify a machine-checked non-theorem — not even by rewording it.
+    ``locked_count`` is DERIVED from ``invariants`` (never a free-standing
+    number), so it can never drift from the list it counts.
     """
 
     ref: str = DEFAULT_SPEC_REF
-    locked_count: int = 8
-    invariants: Sequence[str] = LOCKED_INVARIANTS
+    invariants: Sequence[str] = field(default_factory=tuple)
     tier: str = "locked"
     claims: Sequence[str] = field(default_factory=tuple)
 
     def to_dict(self) -> Dict[str, Any]:
+        invariants = list(self.invariants)
         return {
             "ref": self.ref,
-            "locked_count": self.locked_count,
-            "invariants": list(self.invariants),
+            "locked_count": len(invariants),
+            "invariants": invariants,
             "tier": self.tier,
             "claims": list(self.claims),
         }
@@ -92,8 +115,9 @@ class SpecRef:
 class PCIResult:
     """Structured outcome of :func:`verify_pci_receipt`.
 
-    ``ok`` means the receipt is well-formed, correctly signed (or the caller
-    accepted UNSIGNED-honest), non-overclaiming, and its Λ recomputes. The
+    ``ok`` means the receipt is well-formed, has a real verified signature,
+    passes every honesty check (energy, attestation, spec tier guard), and its
+    Λ recomputes. Keyless receipts are UNSIGNED-honest → ``ok`` is False. The
     ADVISORY verdict (pass/fail of Λ ≥ θ) is carried separately in ``advisory``
     — an advisory-fail is still a *valid* receipt, just a negative verdict.
     """
@@ -153,13 +177,36 @@ def emit_pci_receipt(
         )
     spec = spec or SpecRef()
 
+    # Energy honesty at the source: never mint a fabricated/non-finite joule.
+    if energy_joules is not None and (
+        isinstance(energy_joules, bool)
+        or not isinstance(energy_joules, (int, float))
+        or not math.isfinite(float(energy_joules))
+    ):
+        raise ValueError(
+            "energy_joules must be a finite real number of joules or None "
+            "(a joule is never fabricated)"
+        )
+
+    # Attestation honesty: confidential-execution (τ) verification is not yet
+    # implemented, so only the honest UNAVAILABLE placeholder may be bound — we
+    # never mint a receipt asserting an enclave the verifier cannot check.
+    att = (
+        dict(attestation)
+        if attestation is not None
+        else {"status": "UNAVAILABLE", "kind": "confidential-exec"}
+    )
+    if att.get("status") != "UNAVAILABLE":
+        raise ValueError(
+            "confidential-execution attestation (τ) is not yet verifiable; only "
+            "an honest {'status': 'UNAVAILABLE'} placeholder may be bound"
+        )
+
     pci_extra: Dict[str, Any] = {
         "pci_profile": PCI_PROFILE,
         "lambda_verdict": lambda_verdict.to_dict(),
         "spec": spec.to_dict(),
-        "attestation": dict(attestation)
-        if attestation is not None
-        else {"status": "UNAVAILABLE", "kind": "confidential-exec"},
+        "attestation": att,
     }
     if extra:
         pci_extra["caller"] = dict(extra)
@@ -183,18 +230,20 @@ def verify_pci_receipt(
     composite: Optional[Mapping[str, Any]],
     public_key_pem: Optional[str | bytes] = None,
     *,
-    require_signed: bool = False,
     require_measured_energy: bool = False,
 ) -> PCIResult:
     """Offline-verify a PCI receipt. Never returns a fake pass.
 
     Order of checks (fail-closed at the first violation):
-      1. spine integrity + signature via
-         :func:`szl_receipt.sdk.verify_emitted_receipt` (or UNSIGNED-honest);
+      1. spine integrity + real signature via :func:`szl_receipt.sdk.verify_receipt`
+         (keyless is UNSIGNED-honest → never a fake pass);
       2. it actually carries the PCI profile;
-      3. energy honesty (optionally require MEASURED);
-      4. spec tier guard — refuse :data:`FORBIDDEN_CLAIMS` overclaims;
-      5. Λ recomputation from the bound scores/weights + verdict consistency.
+      3. energy honesty — a ``joules`` key must be a finite real (else malformed),
+         and MEASURED can be required;
+      4. attestation (τ) honesty — only the UNAVAILABLE placeholder may pass;
+      5. spec tier guard — refuse overclaims, allowlist claims, validate the
+         invariant tokens + locked_count + tier;
+      6. Λ recomputation from the bound scores/weights + verdict consistency.
 
     Returns:
         A :class:`PCIResult`. ``ok`` is True only when every integrity/honesty
@@ -206,8 +255,6 @@ def verify_pci_receipt(
     signed = bool(env.get("signed"))
     if not ok:
         return PCIResult(ok=False, reason=why, signed=signed)
-    if require_signed and not signed:
-        return PCIResult(ok=False, reason="unsigned-honest", signed=signed)
 
     extra = body.get("extra") or {}
     if extra.get("pci_profile") != PCI_PROFILE:
@@ -215,11 +262,22 @@ def verify_pci_receipt(
 
     # (3) energy honesty. The spine renders measured energy VERBATIM as
     # ``{"joules": <real>, "unit": "J"}`` and unmeasured as the string
-    # ``"UNAVAILABLE"`` — a joule is never fabricated. Treat a dict carrying a
-    # real (non-bool) ``joules`` as MEASURED; everything else as UNAVAILABLE.
+    # ``"UNAVAILABLE"`` — a joule is never fabricated. A ``joules`` key that is
+    # not a FINITE real is a fabricated measurement and is refused outright.
     energy = body.get("energy", UNAVAILABLE)
-    joules = energy.get("joules") if isinstance(energy, Mapping) else None
-    is_measured = isinstance(joules, (int, float)) and not isinstance(joules, bool)
+    if isinstance(energy, Mapping) and "joules" in energy:
+        joules = energy.get("joules")
+        if (
+            isinstance(joules, bool)
+            or not isinstance(joules, (int, float))
+            or not math.isfinite(float(joules))
+        ):
+            return PCIResult(
+                ok=False, reason="energy-malformed", energy=UNAVAILABLE, signed=signed
+            )
+        is_measured = True
+    else:
+        is_measured = False
     energy_label = "MEASURED" if is_measured else (
         energy if isinstance(energy, str) else UNAVAILABLE
     )
@@ -228,16 +286,54 @@ def verify_pci_receipt(
             ok=False, reason="energy-unavailable", energy=energy_label, signed=signed
         )
 
-    # (4) spec tier guard — refuse machine-checked non-theorems
-    spec = extra.get("spec") or {}
-    for claim in spec.get("claims", []) or []:
-        code = FORBIDDEN_CLAIMS.get(str(claim))
-        if code:
-            return PCIResult(
-                ok=False, reason=code, energy=energy_label, signed=signed
-            )
+    # (4) attestation (τ) honesty — confidential-execution verification is not
+    # yet implemented, so ONLY the honest UNAVAILABLE placeholder may pass; a
+    # receipt asserting a "verified" enclave we cannot check is refused.
+    attestation = extra.get("attestation") or {}
+    att_status = (
+        attestation.get("status") if isinstance(attestation, Mapping) else None
+    )
+    if att_status != "UNAVAILABLE":
+        return PCIResult(
+            ok=False, reason="attestation-unverifiable",
+            energy=energy_label, signed=signed,
+        )
 
-    # (5) Λ recomputation from the BOUND scores/weights
+    # (5) spec tier guard — refuse machine-checked non-theorems. Belt-and-braces:
+    # (a) the specific overclaim tokens are refused with their exact reason code,
+    # scanned across BOTH claims and invariants; (b) claims are ALLOWLISTED so no
+    # reworded overclaim survives; (c) invariants must be identifier tokens (not
+    # prose); (d) tier must be known; (e) locked_count must match the list.
+    spec = extra.get("spec") or {}
+    claims = [str(c) for c in (spec.get("claims") or [])]
+    invariants = [str(i) for i in (spec.get("invariants") or [])]
+    for token in (*claims, *invariants):
+        code = FORBIDDEN_CLAIMS.get(token)
+        if code:
+            return PCIResult(ok=False, reason=code, energy=energy_label, signed=signed)
+    for claim in claims:
+        if claim not in ALLOWED_CLAIMS:
+            return PCIResult(
+                ok=False, reason=f"claim-not-allowlisted:{claim}",
+                energy=energy_label, signed=signed,
+            )
+    for inv in invariants:
+        if not _INVARIANT_RE.match(inv):
+            return PCIResult(
+                ok=False, reason="invariant-malformed",
+                energy=energy_label, signed=signed,
+            )
+    if str(spec.get("tier", "locked")) not in ALLOWED_TIERS:
+        return PCIResult(
+            ok=False, reason="spec-tier-unknown", energy=energy_label, signed=signed
+        )
+    if spec.get("locked_count") != len(invariants):
+        return PCIResult(
+            ok=False, reason="spec-locked-count-mismatch",
+            energy=energy_label, signed=signed,
+        )
+
+    # (6) Λ recomputation from the BOUND scores/weights
     lv = extra.get("lambda_verdict") or {}
     try:
         recomputed = lambda_gate.lambda_score(
