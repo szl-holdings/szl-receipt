@@ -1,0 +1,20 @@
+# Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
+name: Trivy
+
+# Org reusable Trivy filesystem scan gate (SHA-pinned caller). Wave G CI parity.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  trivy:
+    uses: szl-holdings/.github/.github/workflows/reusable-trivy.yml@ebd2128c691b850c84438b671fbb512945933776
+    secrets: inherit

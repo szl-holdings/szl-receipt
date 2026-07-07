@@ -1,0 +1,18 @@
+# Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
+name: SBOM
+
+# Org reusable SBOM (CycloneDX + SPDX) gate (SHA-pinned caller). Wave G CI parity.
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sbom:
+    uses: szl-holdings/.github/.github/workflows/reusable-sbom.yml@ebd2128c691b850c84438b671fbb512945933776
+    secrets: inherit
