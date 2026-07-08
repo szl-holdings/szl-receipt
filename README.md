@@ -1,3 +1,5 @@
+> **SZL Holdings** · Doctrine v11 · Λ = Conjecture 1 (advisory, never "green"/theorem) · canonical [a-11-oy.com](https://a-11-oy.com)
+
 # szl-receipt
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
