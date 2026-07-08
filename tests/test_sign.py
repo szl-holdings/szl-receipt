@@ -68,3 +68,44 @@ def test_keyless_honesty(keypair, receipt):
     ok2, detail2 = verify_receipt(env)
     assert ok2 is False
     assert detail2 == "unsigned-honest"
+
+
+# Test 6 — the signed envelope's advisory digest equals the body digest
+def test_signed_envelope_digest_matches_body(keypair, receipt):
+    priv_pem, _ = keypair
+    env = sign_receipt(receipt, private_key_pem=priv_pem, organ="a11oy")
+    assert env["digest"] == receipt.digest()
+
+
+# Test 7 — digest binding: a valid signature + intact payload but a forged
+# ``digest`` field (which rides OUTSIDE the signed PAE bytes) is refused, so a
+# consumer that references a receipt by envelope["digest"] cannot be misdirected.
+def test_forged_digest_field_is_rejected(keypair, receipt):
+    priv_pem, pub_pem = keypair
+    env = sign_receipt(receipt, private_key_pem=priv_pem, organ="a11oy")
+
+    # Sanity: untouched envelope verifies.
+    ok, detail = verify_receipt(env, public_key_pem=pub_pem)
+    assert ok is True and detail == "ok"
+
+    # Flip the advisory digest to another well-formed but wrong sha256 hex.
+    forged_env = dict(env)
+    forged_env["digest"] = "0" * 64
+    assert forged_env["digest"] != env["digest"]
+
+    ok2, detail2 = verify_receipt(forged_env, public_key_pem=pub_pem)
+    assert ok2 is False
+    assert detail2 == "digest-mismatch"
+
+
+# Test 8 — backward compatibility: an envelope with no digest field still
+# verifies purely on its signature (the digest binding is additive, not required).
+def test_absent_digest_still_verifies(keypair, receipt):
+    priv_pem, pub_pem = keypair
+    env = sign_receipt(receipt, private_key_pem=priv_pem, organ="a11oy")
+    no_digest_env = dict(env)
+    no_digest_env.pop("digest", None)
+
+    ok, detail = verify_receipt(no_digest_env, public_key_pem=pub_pem)
+    assert ok is True
+    assert detail == "ok"

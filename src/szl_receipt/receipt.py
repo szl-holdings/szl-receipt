@@ -126,6 +126,13 @@ def verify_receipt(
       - Signed envelopes are verified via DSSE/ECDSA-P256-SHA256.
         The payload is decoded from base64 and checked against the
         PAE of the declared payloadType.
+      - Digest binding: the envelope's ``digest`` field is convenience
+        metadata that rides OUTSIDE the signed PAE bytes. Once the signature
+        is confirmed authentic, the advertised ``digest`` is bound to the
+        authenticated payload — a receipt whose ``digest`` does not match its
+        signed body is refused as ``"digest-mismatch"`` so a consumer that
+        indexes/references a receipt by ``envelope["digest"]`` cannot be
+        misdirected by a payload-intact, digest-altered envelope.
 
     Args:
         envelope: Dict as returned by ``sign_receipt``.
@@ -133,9 +140,11 @@ def verify_receipt(
             signed envelopes; ignored for unsigned).
 
     Returns:
-        ``(True, "ok")`` — valid signature.
+        ``(True, "ok")`` — valid signature and (if present) a matching digest.
         ``(False, "unsigned-honest")`` — envelope was never signed.
         ``(False, "signature mismatch")`` — signature is invalid.
+        ``(False, "digest-mismatch")`` — signature is valid but the envelope's
+            advisory ``digest`` does not match the signed payload.
         ``(False, "<error description>")`` — any other failure.
     """
     # UNSIGNED-honest contract — never report a pass for unsigned
@@ -159,6 +168,19 @@ def verify_receipt(
 
     try:
         sig_b64 = envelope["signature"]
-        return verify_dsse(body_dict, sig_b64, public_key_pem)
+        ok, detail = verify_dsse(body_dict, sig_b64, public_key_pem)
     except Exception as exc:  # noqa: BLE001
         return False, f"envelope decode error: {exc}"
+
+    if not ok:
+        return ok, detail
+
+    # Signature authentic over the payload. The ``digest`` field is convenience
+    # metadata OUTSIDE the signed PAE bytes, so a tampered envelope can keep the
+    # signature+payload intact yet advertise a mismatched digest. Bind it to the
+    # authenticated payload; an absent digest stays backward-compatible.
+    env_digest = envelope.get("digest")
+    if env_digest is not None and env_digest != body_digest(body_dict):
+        return False, "digest-mismatch"
+
+    return True, "ok"
