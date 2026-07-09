@@ -167,3 +167,9 @@ pytest -q
 
 SPDX-License-Identifier: Apache-2.0  
 ORCID: 0009-0001-0110-4173
+
+---
+
+**Explore the SZL estate:** [a11oy console](https://a-11-oy.com) · [LLM Router](https://github.com/szl-holdings/szl-router) · [Receipt format spec](https://github.com/szl-holdings/governed-receipt-spec) · [Lean proofs](https://github.com/szl-holdings/lutar-lean) · [Docs](https://github.com/szl-holdings/docs-site) · [🤗 SZLHOLDINGS](https://huggingface.co/SZLHOLDINGS)
+
+<sub>The [SZL Router](https://github.com/szl-holdings/szl-router) signs every answer with this library, emitting the open [governed-receipt-spec](https://github.com/szl-holdings/governed-receipt-spec) format.</sub>
