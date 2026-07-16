@@ -10,10 +10,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  security-events: write
+  contents: read
 
 jobs:
   sbom:
+    permissions:
+      contents: write
+      security-events: write
     uses: szl-holdings/.github/.github/workflows/reusable-sbom.yml@ebd2128c691b850c84438b671fbb512945933776
     secrets: inherit

@@ -12,9 +12,10 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   trivy:
+    permissions:
+      security-events: write
     uses: szl-holdings/.github/.github/workflows/reusable-trivy.yml@ebd2128c691b850c84438b671fbb512945933776
     secrets: inherit
