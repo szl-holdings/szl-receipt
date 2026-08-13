@@ -39,7 +39,7 @@ Save the public key to ``organ.pub``, then::
 """
 from __future__ import annotations
 
-from . import attest, lambda_gate, sdk
+from . import attest, governed_action, lambda_gate, sdk
 from ._sign import PAYLOAD_TYPE, generate_keypair
 from .attest import (
     IN_TOTO_STATEMENT_TYPE,
@@ -49,6 +49,16 @@ from .attest import (
     verify_statement,
 )
 from .receipt import Receipt, sign_receipt, verify_receipt
+from .governed_action import (
+    GOVERNED_ACTION_PREDICATE_TYPE,
+    INCOMPLETE,
+    PASS,
+    REQUIRED_SUBJECT_ROLES,
+    GovernedActionVerification,
+    build_governed_action_statement,
+    emit_governed_action,
+    verify_governed_action,
+)
 from .sdk import (
     DOCTRINE,
     PCGI_BUILD_TYPE,
@@ -67,7 +77,7 @@ from .pci import (
     verify_pci_receipt,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "SZL Contributors"
 __license__ = "Apache-2.0"
 
@@ -84,6 +94,16 @@ __all__ = [
     "compliance_evidence",
     "verify_statement",
     "IN_TOTO_STATEMENT_TYPE",
+    # Multi-subject release/runtime admission (standard DSSE + in-toto)
+    "governed_action",
+    "emit_governed_action",
+    "verify_governed_action",
+    "build_governed_action_statement",
+    "GovernedActionVerification",
+    "GOVERNED_ACTION_PREDICATE_TYPE",
+    "REQUIRED_SUBJECT_ROLES",
+    "PASS",
+    "INCOMPLETE",
     # PCGI one-call unifier (the spine) — emit_receipt / verify_emitted_receipt
     "sdk",
     "emit_receipt",
