@@ -1,0 +1,422 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published stable release tag to publish (vX.Y.Z)
+        required: true
+        type: string
+
+# Every job declares its own least-privilege token scope. In particular, the
+# build job cannot mint an OIDC token and the publish job cannot read source.
+permissions: {}
+
+concurrency:
+  group: pypi-publish-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify distributions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate the release event
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ "${EVENT_NAME}" == "release" || "${EVENT_NAME}" == "workflow_dispatch" ]] || {
+            echo "Refusing unsupported event ${EVENT_NAME}." >&2
+            exit 1
+          }
+          if [[ "${EVENT_NAME}" == "release" && "${EVENT_ACTION}" != "published" ]]; then
+            echo "Refusing release action ${EVENT_ACTION}." >&2
+            exit 1
+          fi
+          [[ "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Release tag must have the exact stable form vX.Y.Z: ${RELEASE_TAG}" >&2
+            exit 1
+          }
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          [[ "$(jq -r '.tag_name' <<<"${release_json}")" == "${RELEASE_TAG}" ]] || {
+            echo "Release lookup returned a different tag." >&2
+            exit 1
+          }
+          [[ "$(jq -r '.draft' <<<"${release_json}")" == "false" ]] || {
+            echo "Refusing to publish a draft release." >&2
+            exit 1
+          }
+          [[ "$(jq -r '.prerelease' <<<"${release_json}")" == "false" ]] || {
+            echo "Refusing to publish a prerelease to the production index." >&2
+            exit 1
+          }
+          jq -e '.published_at != null and .published_at != ""' \
+            <<<"${release_json}" >/dev/null || {
+            echo "Release has no publication timestamp." >&2
+            exit 1
+          }
+
+          tag_ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          [[ "$(jq -r '.object.type' <<<"${tag_ref_json}")" == "tag" ]] || {
+            echo "Release tag must be an annotated tag object, not a lightweight tag." >&2
+            exit 1
+          }
+          tag_object_sha="$(jq -r '.object.sha' <<<"${tag_ref_json}")"
+          [[ "${tag_object_sha}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Annotated tag object SHA is malformed." >&2
+            exit 1
+          }
+
+          tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}")"
+          [[ "$(jq -r '.verification.verified' <<<"${tag_json}")" == "true" ]] || {
+            echo "Release tag is not verified by GitHub." >&2
+            exit 1
+          }
+          [[ "$(jq -r '.verification.reason' <<<"${tag_json}")" == "valid" ]] || {
+            echo "Release tag verification reason is not valid." >&2
+            exit 1
+          }
+          [[ "$(jq -r '.object.type' <<<"${tag_json}")" == "commit" ]] || {
+            echo "Annotated release tag does not target a commit." >&2
+            exit 1
+          }
+          tag_target_sha="$(jq -r '.object.sha' <<<"${tag_json}")"
+          [[ "${tag_target_sha}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Release tag target SHA is malformed." >&2
+            exit 1
+          }
+
+          echo "release_tag=${RELEASE_TAG}" >>"${GITHUB_OUTPUT}"
+          echo "tag_target_sha=${tag_target_sha}" >>"${GITHUB_OUTPUT}"
+          echo "Validated published release ${RELEASE_TAG} and verified tag ${tag_object_sha}."
+
+      - name: Check out the exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.release.outputs.release_tag }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Match checkout to the verified tag target
+        env:
+          TAG_TARGET_SHA: ${{ steps.release.outputs.tag_target_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${TAG_TARGET_SHA}" ]] || {
+            echo "Checked-out commit does not match the verified tag target." >&2
+            exit 1
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          check-latest: false
+
+      - name: Match the release tag to project metadata
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          match = re.fullmatch(
+              r"v(?P<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))",
+              tag,
+          )
+          if match is None:
+              raise SystemExit(f"invalid stable release tag: {tag!r}")
+
+          with Path("pyproject.toml").open("rb") as stream:
+              document = tomllib.load(stream)
+
+          project = document.get("project")
+          if not isinstance(project, dict):
+              raise SystemExit("pyproject.toml has no [project] table")
+
+          project_version = project.get("version")
+          if not isinstance(project_version, str) or not project_version:
+              raise SystemExit("[project].version must be a non-empty static string")
+
+          tag_version = match.group("version")
+          if project_version != tag_version:
+              raise SystemExit(
+                  f"release tag version {tag_version!r} does not match "
+                  f"[project].version {project_version!r}"
+              )
+
+          print(f"Validated release {tag} for project version {project_version}.")
+          PY
+
+      - name: Install pinned packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            "build==1.5.0" \
+            "hatchling==1.32.0" \
+            "twine==7.0.0"
+
+      - name: Build wheel and source distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m build --no-isolation --wheel --sdist --outdir dist
+
+      - name: Inspect distribution archives and metadata
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import tarfile
+          import tomllib
+          import zipfile
+          from email.parser import BytesParser
+          from email.policy import compat32
+          from pathlib import Path, PurePosixPath
+
+          dist = Path("dist")
+          entries = sorted(dist.iterdir()) if dist.is_dir() else []
+          if len(entries) != 2 or any(not entry.is_file() or entry.is_symlink() for entry in entries):
+              raise SystemExit("dist/ must contain exactly two regular files")
+
+          wheels = [entry for entry in entries if entry.suffix == ".whl"]
+          sdists = [entry for entry in entries if entry.name.endswith(".tar.gz")]
+          if len(wheels) != 1 or len(sdists) != 1:
+              raise SystemExit("dist/ must contain exactly one wheel and one .tar.gz sdist")
+
+          safe_filename = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+          for entry in entries:
+              if safe_filename.fullmatch(entry.name) is None or entry.stat().st_size == 0:
+                  raise SystemExit(f"unsafe or empty distribution file: {entry.name!r}")
+
+          with Path("pyproject.toml").open("rb") as stream:
+              project = tomllib.load(stream).get("project")
+          if not isinstance(project, dict):
+              raise SystemExit("pyproject.toml has no [project] table")
+
+          project_name = project.get("name")
+          project_version = project.get("version")
+          if not isinstance(project_name, str) or not isinstance(project_version, str):
+              raise SystemExit("project name and version must be static strings")
+          if os.environ["RELEASE_TAG"] != f"v{project_version}":
+              raise SystemExit("release tag changed or no longer matches project metadata")
+
+          def canonical_name(value: str) -> str:
+              return re.sub(r"[-_.]+", "-", value).lower()
+
+          def validate_member_path(value: str, archive_name: str) -> None:
+              member = PurePosixPath(value)
+              if member.is_absolute() or not member.parts or ".." in member.parts:
+                  raise SystemExit(f"unsafe path in {archive_name}: {value!r}")
+
+          def validate_metadata(raw: bytes, source: str) -> None:
+              metadata = BytesParser(policy=compat32).parsebytes(raw)
+              metadata_name = metadata.get("Name")
+              metadata_version = metadata.get("Version")
+              if not metadata_name or canonical_name(metadata_name) != canonical_name(project_name):
+                  raise SystemExit(
+                      f"{source} project name {metadata_name!r} does not match {project_name!r}"
+                  )
+              if metadata_version != project_version:
+                  raise SystemExit(
+                      f"{source} version {metadata_version!r} does not match {project_version!r}"
+                  )
+              requires_python = project.get("requires-python")
+              if isinstance(requires_python, str) and metadata.get("Requires-Python") != requires_python:
+                  raise SystemExit(f"{source} Requires-Python does not match pyproject.toml")
+
+          wheel = wheels[0]
+          wheel_parts = wheel.name[:-4].split("-")
+          if len(wheel_parts) < 5 or wheel_parts[1] != project_version:
+              raise SystemExit(f"wheel filename does not encode version {project_version}: {wheel.name}")
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit(f"duplicate archive members in {wheel.name}")
+              for name in names:
+                  validate_member_path(name, wheel.name)
+              metadata_members = [name for name in names if name.endswith(".dist-info/METADATA")]
+              wheel_members = [name for name in names if name.endswith(".dist-info/WHEEL")]
+              record_members = [name for name in names if name.endswith(".dist-info/RECORD")]
+              if not (len(metadata_members) == len(wheel_members) == len(record_members) == 1):
+                  raise SystemExit(f"wheel metadata structure is incomplete or ambiguous: {wheel.name}")
+              validate_metadata(archive.read(metadata_members[0]), f"{wheel.name}:METADATA")
+
+          sdist = sdists[0]
+          if not sdist.name[:-7].endswith(f"-{project_version}"):
+              raise SystemExit(f"sdist filename does not encode version {project_version}: {sdist.name}")
+          with tarfile.open(sdist, mode="r:gz") as archive:
+              members = archive.getmembers()
+              names = [member.name for member in members]
+              if len(names) != len(set(names)):
+                  raise SystemExit(f"duplicate archive members in {sdist.name}")
+              for member in members:
+                  validate_member_path(member.name, sdist.name)
+                  if not (member.isdir() or member.isfile()):
+                      raise SystemExit(
+                          f"unsupported link, device, or special member in {sdist.name}: {member.name}"
+                      )
+              metadata_members = [member for member in members if member.name.endswith("/PKG-INFO")]
+              if len(metadata_members) != 1:
+                  raise SystemExit(f"sdist must contain exactly one PKG-INFO: {sdist.name}")
+              extracted = archive.extractfile(metadata_members[0])
+              if extracted is None:
+                  raise SystemExit(f"unable to read PKG-INFO from {sdist.name}")
+              validate_metadata(extracted.read(), f"{sdist.name}:PKG-INFO")
+
+          print(f"Inspected {wheel.name} and {sdist.name} for {project_name} {project_version}.")
+          PY
+          python -m twine check --strict dist/*
+
+      - name: Smoke-install the built wheel
+        env:
+          EXPECTED_VERSION: ${{ steps.release.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .wheel-smoke
+          .wheel-smoke/bin/python -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            --only-binary=:all: \
+            dist/*.whl
+          .wheel-smoke/bin/python - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          import szl_receipt
+
+          expected = os.environ["EXPECTED_VERSION"].removeprefix("v")
+          installed = version("szl-receipt")
+          if installed != expected:
+              raise SystemExit(
+                  f"installed wheel version {installed!r} does not match release {expected!r}"
+              )
+          if not getattr(szl_receipt, "__version__", None) == expected:
+              raise SystemExit("imported package __version__ does not match installed metadata")
+          print(f"Smoke-installed and imported szl-receipt {installed}.")
+          PY
+
+      - name: Create the artifact checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-manifest
+          (
+            cd dist
+            sha256sum -- * | LC_ALL=C sort -k2
+          ) > release-manifest/SHA256SUMS
+          [[ "$(wc -l < release-manifest/SHA256SUMS)" -eq 2 ]] || {
+            echo "Checksum manifest must describe exactly two distributions." >&2
+            exit 1
+          }
+
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-package-distributions-${{ github.run_id }}
+          path: |
+            dist/
+            release-manifest/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          include-hidden-files: false
+
+  publish:
+    name: Publish distributions to PyPI
+    needs:
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/szl-receipt/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download the verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-package-distributions-${{ github.run_id }}
+          path: release-bundle
+
+      - name: Verify the artifact handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ -d release-bundle/dist && -f release-bundle/release-manifest/SHA256SUMS ]] || {
+            echo "Downloaded artifact is missing distributions or its checksum manifest." >&2
+            exit 1
+          }
+
+          mapfile -t wheels < <(find release-bundle/dist -maxdepth 1 -type f -name '*.whl' -print)
+          mapfile -t sdists < <(find release-bundle/dist -maxdepth 1 -type f -name '*.tar.gz' -print)
+          mapfile -t files < <(find release-bundle/dist -maxdepth 1 -type f -print)
+          [[ "${#wheels[@]}" -eq 1 && "${#sdists[@]}" -eq 1 && "${#files[@]}" -eq 2 ]] || {
+            echo "Downloaded artifact must contain exactly one wheel and one .tar.gz sdist." >&2
+            exit 1
+          }
+
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          dist = Path("release-bundle/dist")
+          manifest = Path("release-bundle/release-manifest/SHA256SUMS")
+          expected_names = {entry.name for entry in dist.iterdir() if entry.is_file()}
+          described_names = set()
+          pattern = re.compile(r"(?P<digest>[0-9a-f]{64})  (?P<name>[A-Za-z0-9][A-Za-z0-9._+-]*)")
+          for line in manifest.read_text(encoding="ascii").splitlines():
+              match = pattern.fullmatch(line)
+              if match is None or match.group("name") in described_names:
+                  raise SystemExit("checksum manifest is malformed or contains duplicate entries")
+              described_names.add(match.group("name"))
+          if described_names != expected_names:
+              raise SystemExit("checksum manifest and downloaded distributions do not match exactly")
+          PY
+
+          (
+            cd release-bundle/dist
+            sha256sum --check ../release-manifest/SHA256SUMS
+          )
+
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: release-bundle/dist/
+          verify-metadata: "true"
+          attestations: "true"
+          skip-existing: "false"
+          print-hash: "true"
