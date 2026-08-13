@@ -76,7 +76,51 @@ cosign verify-blob --key organ.pub \
 - **cosign-compatible:** PAE is identical to khipu-consensus — byte-for-byte
   compatible with `cosign verify-blob`.
 
+## GovernedAction v1: one release truth, not six disconnected greens
+
+`szl-receipt` 0.3 adds a fail-closed, multi-subject release attestation using
+the `https://szl.dev/GovernedAction/v1` predicate. One standard DSSE envelope
+binds all seven required subjects:
+
+- GitHub source revision
+- Hugging Face repository revision
+- runtime artifact digest
+- provider deployment digest
+- domain-state evidence
+- durable receipt identity
+- independent runtime witness
+
+The signed predicate also binds the authenticated actor, evaluated policy,
+evidence obligations, side effects, timestamps, evidence sources, and freshness
+bounds. `verify_governed_action` independently recomputes the result. Missing,
+stale, duplicate, contradictory, malformed, unsigned, or unverifiable evidence
+returns `INCOMPLETE`; the producer's embedded assessment is never trusted.
+
+```python
+from szl_receipt import emit_governed_action, verify_governed_action
+
+envelope = emit_governed_action(
+    action=action,
+    actor=actor,
+    policy=policy,
+    subjects=subjects,
+    subject_roles=subject_roles,
+    evidence=evidence,
+    obligations=obligations,
+    side_effects=side_effects,
+    assessed_at="2026-08-13T12:00:00Z",
+    private_key_pem=private_key_pem,
+)
+result = verify_governed_action(envelope, public_key_pem)
+assert result.status in {"PASS", "INCOMPLETE"}
+```
+
+The API performs no network, provider, deployment, or filesystem mutation. The
+caller supplies observed evidence; the verifier decides whether those exact
+bytes form a fresh, internally consistent, signed admission record.
+
 ## Proof-Carrying Inference (PCI)
+
 
 PCI is a receipt **profile** layered on the PCGI spine. Where PCGI binds
 `model + input + output + policy + energy` (+ BFT witnesses), PCI adds the two
