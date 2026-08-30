@@ -6,9 +6,14 @@ It binds every release plane needed to admit a governed action and independently
 recomputes the admission result during verification. A producer-provided PASS is
 never trusted on its own.
 
-The implementation is additive. Existing ``szl_receipt`` receipt envelopes keep
-their legacy wire format; GovernedAction uses the DSSEv1 decimal-length PAE and
-the standard ``signatures`` array.
+Migration (v11 §7.1 / B-08): the Statement is structurally validated through
+the pinned ``in-toto-attestation`` 0.9.3 bindings (:mod:`._intoto`), the DSSE
+PAE is the single spec-pinned implementation in :mod:`._canonical` (decimal
+lengths over the DECODED payload bytes), and signature arithmetic is the
+pinned ``cryptography`` 50.0.1 library (ECDSA P-256). No hand-rolled DSSE or
+statement plumbing remains. The predicate type
+``https://szl.dev/GovernedAction/v1``, the canonical-JSON payload, the sha256
+subject digests, and the standard ``signatures`` array are unchanged.
 """
 from __future__ import annotations
 
@@ -24,9 +29,10 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from ._canonical import canonical_json
+from ._canonical import canonical_json, pae
+from ._intoto import STATEMENT_TYPE_URI, statement_ite6_errors
 
-IN_TOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+IN_TOTO_STATEMENT_TYPE = STATEMENT_TYPE_URI
 GOVERNED_ACTION_PREDICATE_TYPE = "https://szl.dev/GovernedAction/v1"
 GOVERNED_ACTION_ENVELOPE_SCHEMA = "https://szl.dev/GovernedActionEnvelope/v1"
 DSSE_PAYLOAD_TYPE = "application/vnd.in-toto+json"
@@ -93,23 +99,11 @@ class GovernedActionVerification:
         }
 
 
-def dsse_pae(payload_type: str, payload: bytes) -> bytes:
-    """Return DSSEv1 Pre-Authentication Encoding using decimal byte lengths."""
-
-    if not isinstance(payload_type, str) or not payload_type:
-        raise ValueError("payload_type must be a non-empty string")
-    if not isinstance(payload, bytes):
-        raise TypeError("payload must be bytes")
-    encoded_type = payload_type.encode("utf-8")
-    return b" ".join(
-        (
-            b"DSSEv1",
-            str(len(encoded_type)).encode("ascii"),
-            encoded_type,
-            str(len(payload)).encode("ascii"),
-            payload,
-        )
-    )
+# DSSEv1 Pre-Authentication Encoding — the single spec-pinned implementation
+# lives in ``_canonical.pae`` (decimal lengths over the DECODED payload bytes).
+# This module's pre-migration local copy is deleted (B-08: two divergent PAE
+# implementations in one package); the public name is preserved as an alias.
+dsse_pae = pae
 
 
 def _json_copy(value: Any) -> Any:
@@ -418,6 +412,18 @@ def _core_reasons(statement: Any) -> list[str]:
     return sorted(set(reasons))
 
 
+def _combined_reasons(statement: Any) -> list[str]:
+    """Admission reasons + ITE-6 structural reasons from the pinned library.
+
+    Used identically at build time (to write the honest ``assessment``) and at
+    verify time (to recompute it), so a producer-stated assessment that
+    disagrees with the independent recomputation is caught by
+    ``assessment-reasons-mismatch`` / ``assessment-status-mismatch``.
+    """
+
+    return sorted(set(_core_reasons(statement) + statement_ite6_errors(statement)))
+
+
 def _assessment_reasons(statement: Any, core_reasons: Sequence[str]) -> list[str]:
     if not isinstance(statement, Mapping):
         return []
@@ -478,7 +484,7 @@ def build_governed_action_statement(
         "predicateType": GOVERNED_ACTION_PREDICATE_TYPE,
         "predicate": predicate,
     }
-    reasons = _core_reasons(statement)
+    reasons = _combined_reasons(statement)
     predicate["assessment"] = {
         "status": PASS if not reasons else INCOMPLETE,
         "reasons": reasons,
@@ -612,7 +618,7 @@ def verify_governed_action(
             except Exception:
                 reasons.append("signature-or-key-invalid")
 
-    core = _core_reasons(statement)
+    core = _combined_reasons(statement)
     reasons.extend(core)
     reasons.extend(_assessment_reasons(statement, core))
     final_reasons = tuple(sorted(set(reasons)))

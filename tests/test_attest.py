@@ -45,8 +45,10 @@ def test_build_statement_and_verify_binding():
 
 def test_verify_rejects_wrong_digest_and_type():
     dg = _digest({"seq": 2})
+    # ITE-6 minimums are library-enforced at build time, so the probe uses a
+    # minimal but structurally valid predicate.
     stmt = attest.build_statement(
-        subject_name="r", subject_digest=dg, predicate={}, predicate_type="p/v1"
+        subject_name="r", subject_digest=dg, predicate={"probe": "x"}, predicate_type="p/v1"
     )
     # Wrong subject digest -> not bound.
     ok, why = attest.verify_statement(stmt, expected_digest="deadbeef")

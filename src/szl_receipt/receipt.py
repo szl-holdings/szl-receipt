@@ -11,6 +11,15 @@ Doctrine (non-negotiable):
     (False, "unsigned-honest") — it NEVER reports a fake pass.
   - One canonical hash: SHA-256 over canonical_json(body), exposed in
     the envelope as algo="ECDSA-P256-SHA256" (or "UNSIGNED" when keyless).
+
+Migration (v11 §7.1 / B-08): signing runs on the pinned maintained stack —
+spec-exact DSSE v1 PAE (._canonical), ECDSA P-256 via ``cryptography``
+50.0.1 (._sign), in-toto Statement construction via ``in-toto-attestation``
+0.9.3 (._intoto). Envelope shape and the UNSIGNED-honest contract are
+unchanged; signatures now cover the standard decimal-length PAE over the
+DECODED payload bytes (the pre-migration binary-length PAE was falsely
+documented as cosign-compatible — pre-migration signatures do not verify
+under the standard PAE and must be re-issued; see MIGRATION.md).
 """
 from __future__ import annotations
 
@@ -64,9 +73,10 @@ def sign_receipt(
     ``note="UNSIGNED-honest: no cosign key present"``.
 
     The envelope payload is ``base64(canonical_json(receipt.body))``; the
-    signature (when present) covers ``pae(PAYLOAD_TYPE, payload_bytes)``
-    with ECDSA-P256-SHA256, identical to khipu-consensus and verifiable
-    with ``cosign verify-blob``.
+    signature (when present) covers the DSSE-spec PAE
+    ``pae(PAYLOAD_TYPE, payload_bytes)`` — ASCII decimal lengths over the
+    DECODED payload bytes — with ECDSA-P256-SHA256 via the pinned
+    ``cryptography`` library, verifiable with ``cosign verify-blob``.
 
     Args:
         receipt: The Receipt to wrap.

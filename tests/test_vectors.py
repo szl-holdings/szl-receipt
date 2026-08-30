@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """
 Tests 4-5: deterministic canonical_json/pae vectors; stable digest.
+
+Post-migration (B-08), ``pae`` is the DSSE-spec encoding: ASCII decimal
+lengths over the DECODED payload bytes — the cosign/securesystemslib byte
+format. The pre-migration binary little-endian lengths were non-standard.
 """
 import hashlib
-import struct
 
 from szl_receipt import Receipt, PAYLOAD_TYPE
 from szl_receipt._canonical import canonical_json, pae
@@ -25,29 +28,38 @@ def test_canonical_json_unicode():
     assert result == '{"msg":"héllo"}'.encode("utf-8")
 
 
-# Test 4b — pae matches khipu's byte format exactly
+# Test 4b — pae matches the DSSE v1 spec byte format exactly (decimal lengths)
 def test_pae_format():
     pt = PAYLOAD_TYPE.encode("utf-8")
     body = b'{"a":1}'
 
     result = pae(PAYLOAD_TYPE, body)
 
-    # DSSEv1 SP <8-byte-LE len(pt)> <pt> SP <8-byte-LE len(body)> <body>
+    # DSSEv1 SP <ascii-decimal len(pt)> <pt> SP <ascii-decimal len(body)> <body>
     expected = (
         b"DSSEv1 "
-        + struct.pack("<Q", len(pt))
+        + str(len(pt)).encode("ascii")
+        + b" "
         + pt
         + b" "
-        + struct.pack("<Q", len(body))
+        + str(len(body)).encode("ascii")
+        + b" "
         + body
     )
     assert result == expected, f"\nGot:      {result!r}\nExpected: {expected!r}"
 
 
+def test_pae_matches_dsse_spec_vector():
+    # The worked example from the DSSE v1 protocol specification.
+    assert pae("http://example.com/HelloWorld", b"hello world") == (
+        b"DSSEv1 29 http://example.com/HelloWorld 11 hello world"
+    )
+
+
 def test_pae_empty_body():
     result = pae("application/x-test", b"")
     pt = b"application/x-test"
-    expected = b"DSSEv1 " + struct.pack("<Q", len(pt)) + pt + b" " + struct.pack("<Q", 0)
+    expected = b"DSSEv1 " + str(len(pt)).encode("ascii") + b" " + pt + b" 0 "
     assert result == expected
 
 
