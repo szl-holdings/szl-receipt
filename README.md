@@ -9,6 +9,14 @@ Shared signed-receipt library for SZL components. Provides cryptographically
 signed per-inference receipts using **DSSE/ECDSA-P256-SHA256** (cosign-compatible),
 with an **UNSIGNED-honest** fallback when no signing key is present.
 
+Built on pinned, maintained libraries — no hand-rolled DSSE/crypto:
+[`in-toto-attestation` 0.9.3](https://pypi.org/project/in-toto-attestation/)
+(ITE-6 Statement/predicate bindings) for attestation construction and
+[`cryptography` 50.0.1](https://pypi.org/project/cryptography/) for the ECDSA
+P-256 signature primitive. The DSSE PAE is the spec encoding (ASCII decimal
+lengths over the **decoded** payload bytes), byte-for-byte compatible with
+`cosign verify-blob`.
+
 ## Install
 
 ```bash
@@ -73,8 +81,14 @@ cosign verify-blob --key organ.pub \
   `verify_receipt` returns `(False, "unsigned-honest")` — NEVER a fake pass.
 - **One canonical hash:** SHA-256 over `canonical_json(body)` (sorted keys,
   compact separators, UTF-8). Resolves SHA3-vs-SHA256 drift.
-- **cosign-compatible:** PAE is identical to khipu-consensus — byte-for-byte
-  compatible with `cosign verify-blob`.
+- **cosign-compatible:** the PAE is the DSSE-v1 spec encoding — `DSSEv1 SP
+  LEN(type) SP type SP LEN(body) SP body` with ASCII decimal lengths over the
+  decoded payload bytes — byte-for-byte compatible with `cosign verify-blob`.
+  (Pre-migration releases used a non-standard binary-length PAE whose cosign
+  compatibility claim was false; receipts signed before 0.4 must be re-issued.)
+- **Pinned maintained libraries:** attestation statements are constructed and
+  validated through `in-toto-attestation` 0.9.3; signatures are ECDSA P-256
+  via `cryptography` 50.0.1. No hand-rolled DSSE or crypto primitives.
 
 ## GovernedAction v1: one release truth, not six disconnected greens
 

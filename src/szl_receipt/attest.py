@@ -42,9 +42,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ._canonical import canonical_json
+from ._intoto import STATEMENT_TYPE_URI, statement_from_parts
 
-# In-toto Statement envelope type (stable, ecosystem-standard URI).
-IN_TOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+# In-toto Statement envelope type (stable, ecosystem-standard URI) — sourced
+# from the pinned in-toto-attestation 0.9.3 bindings, not re-typed by hand.
+IN_TOTO_STATEMENT_TYPE = STATEMENT_TYPE_URI
 
 # Default SZL predicate type. Honest: an SZL URI, SLSA-*shaped* for
 # recognizability — NOT a claim of official SLSA-provenance conformance.
@@ -166,6 +168,14 @@ def build_statement(
     attestation is inseparable from the exact record it describes. The returned
     dict is the *unsigned* payload a DSSE/Sigstore signer would then wrap.
 
+    The Statement is constructed and validated through the pinned
+    ``in-toto-attestation`` 0.9.3 bindings (ITE-6 minimums: v1 type URI, at
+    least one subject carrying a digest, a predicate type, a non-empty
+    predicate) — the shape is enforced by the maintained library, not by
+    hand-checked convention. The dict is serialised from the caller's values
+    (not a protobuf round-trip) so integral JSON numbers keep their exact
+    canonical bytes.
+
     Args:
         subject_name: Human/tool-facing name for the subject (the receipt).
         subject_digest: Hex digest of the receipt body (the binding anchor).
@@ -176,10 +186,19 @@ def build_statement(
 
     Returns:
         An in-toto Statement v1 dict.
+
+    Raises:
+        ValueError: If the parts violate the ITE-6 minimums (empty
+            ``subject_name``/``subject_digest``/``predicate_type``/``predicate``).
     """
+    subject = {"name": subject_name, "digest": {digest_alg: subject_digest}}
+    # Maintained-library construction + validation (raises on violation).
+    statement_from_parts(
+        subjects=[subject], predicate_type=predicate_type, predicate=predicate
+    )
     return {
         "_type": IN_TOTO_STATEMENT_TYPE,
-        "subject": [{"name": subject_name, "digest": {digest_alg: subject_digest}}],
+        "subject": [subject],
         "predicateType": predicate_type,
         "predicate": predicate,
     }
