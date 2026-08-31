@@ -1,0 +1,107 @@
+name: Retire legacy DCO organization ruleset
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/retire-legacy-dco-ruleset.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/retire-legacy-dco-ruleset.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retire-legacy-dco-org-ruleset
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate exact DCO retirement target
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate immutable target identity
+        shell: bash
+        env:
+          EXPECTED_ORG: szl-holdings
+          EXPECTED_RULESET_ID: "20596488"
+          EXPECTED_RULESET_NAME: external-dco-required-workflow
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_ORG" = "szl-holdings"
+          test "$EXPECTED_RULESET_ID" = "20596488"
+          test "$EXPECTED_RULESET_NAME" = "external-dco-required-workflow"
+          case "$EXPECTED_RULESET_ID" in
+            *[!0-9]*|'') echo "Invalid ruleset id" >&2; exit 1 ;;
+          esac
+          echo "Validated exact legacy DCO ruleset retirement target."
+
+  retire:
+    name: Delete exact legacy DCO ruleset
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          egress-policy: audit
+
+      - name: Mint preferred organization-administration token
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.QILLQAQ_CLIENT_ID }}
+          private-key: ${{ secrets.QILLQAQ_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-organization-administration: write
+
+      - name: Retire ruleset and verify absence
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.SZL_GITHUB_TOKEN }}
+          ORG: szl-holdings
+          RULESET_ID: "20596488"
+          RULESET_NAME: external-dco-required-workflow
+        run: |
+          set -euo pipefail
+          token="${APP_TOKEN:-${FALLBACK_TOKEN:-}}"
+          test -n "$token" || { echo "No organization-administration token is available." >&2; exit 1; }
+
+          api="https://api.github.com/orgs/${ORG}/rulesets/${RULESET_ID}"
+          status="$(curl --silent --show-error --output /tmp/ruleset-delete.json --write-out '%{http_code}' \
+            --request DELETE \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${token}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$api")"
+
+          case "$status" in
+            204)
+              echo "Deleted organization ruleset ${RULESET_ID} (${RULESET_NAME})."
+              ;;
+            404)
+              echo "Ruleset ${RULESET_ID} is already absent; retirement is idempotently complete."
+              ;;
+            *)
+              echo "Unexpected delete status: ${status}" >&2
+              sed -E 's/(token|authorization)[^,}]*/REDACTED/Ig' /tmp/ruleset-delete.json >&2 || true
+              exit 1
+              ;;
+          esac
+
+          verify_status="$(curl --silent --show-error --output /tmp/ruleset-verify.json --write-out '%{http_code}' \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${token}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$api")"
+          test "$verify_status" = "404" || {
+            echo "Ruleset still resolves after retirement; status=${verify_status}" >&2
+            exit 1
+          }
+          echo "Verified legacy DCO organization ruleset is absent."
