@@ -133,9 +133,12 @@ def verify_receipt(
       - Keyless (``signed==False``) envelopes always return
         ``(False, "unsigned-honest")`` regardless of *public_key_pem*.
         This enforces the UNSIGNED-honest contract — no fake passes.
+      - Signed envelopes must declare the receipt ``PAYLOAD_TYPE`` and carry
+        exactly the canonical JSON payload bytes that were signed. Verification
+        therefore binds the DSSE signature to the envelope's actual decoded
+        payload bytes; semantically equivalent but byte-different JSON is
+        refused instead of being silently re-canonicalized before verification.
       - Signed envelopes are verified via DSSE/ECDSA-P256-SHA256.
-        The payload is decoded from base64 and checked against the
-        PAE of the declared payloadType.
       - Digest binding: the envelope's ``digest`` field is convenience
         metadata that rides OUTSIDE the signed PAE bytes. Once the signature
         is confirmed authentic, the advertised ``digest`` is bound to the
@@ -150,8 +153,12 @@ def verify_receipt(
             signed envelopes; ignored for unsigned).
 
     Returns:
-        ``(True, "ok")`` — valid signature and (if present) a matching digest.
+        ``(True, "ok")`` — valid signature over the exact canonical payload.
         ``(False, "unsigned-honest")`` — envelope was never signed.
+        ``(False, "payload-type-mismatch")`` — the declared DSSE payload type
+            is not the receipt payload type covered by this verifier.
+        ``(False, "payload-not-canonical-json")`` — decoded JSON does not match
+            the exact canonical bytes used by the signing primitive.
         ``(False, "signature mismatch")`` — signature is invalid.
         ``(False, "digest-mismatch")`` — signature is valid but the envelope's
             advisory ``digest`` does not match the signed payload.
@@ -164,16 +171,37 @@ def verify_receipt(
     if not public_key_pem:
         return False, "no public key provided"
 
+    # The low-level verifier is intentionally fixed to PAYLOAD_TYPE. Refuse a
+    # caller-visible envelope that declares anything else so metadata cannot
+    # drift from the PAE domain being authenticated.
+    if envelope.get("payloadType") != PAYLOAD_TYPE:
+        return False, "payload-type-mismatch"
+
     try:
-        payload_bytes = base64.b64decode(envelope["payload"])
+        encoded_payload = envelope["payload"]
+        if not isinstance(encoded_payload, str):
+            raise TypeError("payload must be a base64 string")
+        payload_bytes = base64.b64decode(encoded_payload, validate=True)
     except Exception as exc:  # noqa: BLE001
         return False, f"envelope decode error: {exc}"
 
     try:
         import json
+
         body_dict = json.loads(payload_bytes.decode("utf-8"))
     except Exception:  # noqa: BLE001
         # Corrupted payload cannot decode -> treat as tamper / signature mismatch
+        return False, "signature mismatch"
+
+    # ``verify_dsse`` signs/verifies canonical_json(body_dict). Require those
+    # bytes to be exactly the bytes carried by the envelope before invoking it;
+    # otherwise whitespace/reordering/duplicate-key transformations could be
+    # accepted after parsing even though DSSE authenticates bytes, not abstract
+    # JSON semantics.
+    try:
+        if canonical_json(body_dict) != payload_bytes:
+            return False, "payload-not-canonical-json"
+    except Exception:  # noqa: BLE001
         return False, "signature mismatch"
 
     try:
