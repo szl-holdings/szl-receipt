@@ -3,6 +3,7 @@
 Tests 1-3: sign->verify roundtrip, tamper detection, keyless honesty.
 """
 import base64
+import json
 
 import pytest
 
@@ -109,3 +110,36 @@ def test_absent_digest_still_verifies(keypair, receipt):
     ok, detail = verify_receipt(no_digest_env, public_key_pem=pub_pem)
     assert ok is True
     assert detail == "ok"
+
+
+# Test 9 — payloadType is part of the DSSE PAE domain. The low-level verifier
+# uses the receipt PAYLOAD_TYPE constant, so a caller-visible declaration that
+# says something else must fail instead of verifying under a different label.
+def test_payload_type_tamper_is_rejected(keypair, receipt):
+    priv_pem, pub_pem = keypair
+    env = sign_receipt(receipt, private_key_pem=priv_pem, organ="a11oy")
+    tampered = dict(env)
+    tampered["payloadType"] = "application/json"
+
+    ok, detail = verify_receipt(tampered, public_key_pem=pub_pem)
+    assert ok is False
+    assert detail == "payload-type-mismatch"
+
+
+# Test 10 — DSSE authenticates payload bytes, not abstract JSON semantics.
+# Reformatting the payload leaves the parsed object unchanged; the old verifier
+# silently re-canonicalized it before checking the signature and therefore
+# accepted a byte-different envelope. Exact canonical byte binding must refuse it.
+def test_noncanonical_payload_bytes_are_rejected(keypair, receipt):
+    priv_pem, pub_pem = keypair
+    env = sign_receipt(receipt, private_key_pem=priv_pem, organ="a11oy")
+    body = json.loads(base64.b64decode(env["payload"]).decode("utf-8"))
+    reformatted = json.dumps(body, sort_keys=True, indent=2).encode("utf-8")
+    assert reformatted != base64.b64decode(env["payload"])
+
+    tampered = dict(env)
+    tampered["payload"] = base64.b64encode(reformatted).decode("ascii")
+
+    ok, detail = verify_receipt(tampered, public_key_pem=pub_pem)
+    assert ok is False
+    assert detail == "payload-not-canonical-json"
