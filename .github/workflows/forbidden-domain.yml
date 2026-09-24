@@ -13,8 +13,10 @@
 name: forbidden-domain
 
 on:
-  pull_request:
-
+  pull_request: null
+  merge_group:
+    types:
+    - checks_requested
 permissions:
   contents: read
 

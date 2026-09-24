@@ -2,10 +2,16 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches:
+    - '**'
   pull_request:
-    branches: ["**"]
-
+    branches:
+    - '**'
+  merge_group:
+    types:
+    - checks_requested
+    branches:
+    - '**'
 permissions:
   contents: read
 

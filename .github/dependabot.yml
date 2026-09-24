@@ -15,7 +15,19 @@ updates:
     groups:
       actions:
         patterns:
-          - "*"
+        - '*'
+        update-types:
+        - minor
+        - patch
+        exclude-patterns:
+        - torch*
+        - transformers
+        - accelerate
+        - vllm
+        - unsloth*
+        - openai
+    cooldown:
+      default-days: 3
 
   # Python dependencies
   - package-ecosystem: "pip"
@@ -31,4 +43,19 @@ updates:
     groups:
       python:
         patterns:
-          - "*"
+        - '*'
+        update-types:
+        - minor
+        - patch
+        exclude-patterns:
+        - torch*
+        - transformers
+        - accelerate
+        - vllm
+        - unsloth*
+        - openai
+    cooldown:
+      default-days: 7
+      semver-major-days: 21
+      semver-minor-days: 7
+      semver-patch-days: 3
