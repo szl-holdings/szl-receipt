@@ -56,6 +56,24 @@ def test_evaluate_pass_and_fail():
     assert v2.verdict == "advisory-fail" and v2.lam < 0.8
 
 
+def test_evaluate_rejects_theta_at_or_below_zero():
+    # θ = 0 would pass a zero-vetoed Λ (0.0 >= 0.0). szl.lambda/v1: 0 < τ <= 1.
+    for theta in (0.0, -0.0, -0.1):
+        with pytest.raises(lg.LambdaGateError, match=r"theta must be in \(0,1\]"):
+            lg.evaluate({"a": 0.0, "b": 1.0}, {"a": 0.5, "b": 0.5}, theta=theta)
+    assert lg.evaluate({"a": 1.0}, {"a": 1.0}, theta=1.0).verdict == "advisory-pass"
+
+
+@pytest.mark.parametrize("bad", [1.5, -0.1, float("nan"), float("inf"), True, "0.5", None])
+def test_zero_score_does_not_mask_an_invalid_score(bad):
+    # Every score is validated before the non-compensatory zero collapse, in any dict order.
+    weights = {"a": 0.5, "b": 0.5}
+    with pytest.raises(lg.LambdaGateError):
+        lg.lambda_score({"a": 0.0, "b": bad}, weights)
+    with pytest.raises(lg.LambdaGateError):
+        lg.lambda_score({"b": bad, "a": 0.0}, weights)
+
+
 # --------------------------------------------------------------------------- #
 # PCI emit / verify                                                           #
 # --------------------------------------------------------------------------- #
@@ -147,6 +165,52 @@ def test_wrong_lambda_is_caught_by_recompute():
     )
     res = verify_pci_receipt(r, public_key_pem=pub)
     assert res.ok is False and res.reason == "lambda-recompute-mismatch"
+
+
+def _signed_with_lambda_verdict(scores, lam, theta, verdict):
+    # A self-signed receipt carrying a hand-built Λ-verdict that evaluate() would refuse.
+    priv, pub = generate_keypair()
+    extra = {
+        "pci_profile": PCI_PROFILE,
+        "lambda_verdict": {
+            "kernel": "szl-lambda-gate", "form": "weighted-geometric-mean",
+            "scores": scores, "weights": {"a": 0.5, "b": 0.5},
+            "theta": theta, "lambda": lam, "verdict": verdict, "note": "x",
+        },
+        "spec": SpecRef().to_dict(),
+        "attestation": {"status": "UNAVAILABLE"},
+    }
+    r = emit_receipt(
+        model_id="m", input_digest="i", output_digest="o", policy_id="p",
+        organ="a11oy", private_key_pem=priv, extra=extra,
+    )
+    return r, pub
+
+
+@pytest.mark.parametrize(
+    "theta, verdict",
+    [
+        (0.0, "advisory-pass"),   # the fail-open case: a zero-vetoed Λ passing θ = 0
+        (-0.0, "advisory-pass"),
+        (-0.5, "advisory-pass"),
+        (1.5, "advisory-fail"),
+        (float("nan"), "advisory-fail"),
+        (float("inf"), "advisory-fail"),
+    ],
+)
+def test_verify_refuses_theta_outside_domain(theta, verdict):
+    r, pub = _signed_with_lambda_verdict({"a": 0.0, "b": 1.0}, 0.0, theta, verdict)
+    res = verify_pci_receipt(r, public_key_pem=pub)
+    assert res.ok is False
+    assert res.reason.startswith("theta-invalid:")
+    assert res.advisory is None
+
+
+def test_verify_refuses_zero_score_masking_an_invalid_score():
+    r, pub = _signed_with_lambda_verdict({"a": 0.0, "b": 1.5}, 0.0, 0.5, "advisory-fail")
+    res = verify_pci_receipt(r, public_key_pem=pub)
+    assert res.ok is False
+    assert res.reason.startswith("lambda-invalid:score for 'b' must be in [0,1]")
 
 
 def test_tier_guard_refuses_overclaims():

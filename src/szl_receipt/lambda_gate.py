@@ -62,7 +62,8 @@ def lambda_score(
     """Compute Λ(x) = Π xᵢ ** wᵢ over the shared axes.
 
     Validates xᵢ ∈ [0, 1], wᵢ > 0, matching axis keys, and Σ wᵢ = 1 (within
-    :data:`WEIGHT_SUM_TOL`). Non-compensatory: any xᵢ == 0 yields Λ == 0.
+    :data:`WEIGHT_SUM_TOL`). Non-compensatory: any xᵢ == 0 yields Λ == 0, but
+    only after every score has been validated, so a zero never masks a bad axis.
 
     Raises:
         LambdaGateError: on any ill-formed input. Λ is never guessed.
@@ -83,15 +84,34 @@ def lambda_score(
     if abs(wsum - 1.0) > WEIGHT_SUM_TOL:
         raise LambdaGateError(f"weights must sum to 1 (got {wsum})")
 
-    acc = 0.0
+    xs: Dict[str, float] = {}
     for axis, x in scores.items():
         xv = _as_real(x, f"score for {axis!r}")
         if xv < 0.0 or xv > 1.0:
             raise LambdaGateError(f"score for {axis!r} must be in [0,1] (got {xv})")
-        if xv == 0.0:
-            return 0.0  # non-compensatory collapse — no other axis can buy it back
+        xs[axis] = xv
+
+    if 0.0 in xs.values():
+        return 0.0  # non-compensatory collapse — no other axis can buy it back
+    acc = 0.0
+    for axis, xv in xs.items():
         acc += float(weights[axis]) * math.log(xv)
     return math.exp(acc)
+
+
+def check_theta(theta: object) -> float:
+    """Validate an advisory threshold θ and return it as a float.
+
+    θ must be a finite real in (0, 1] (szl.lambda/v1: 0 < τ ≤ 1). θ = 0 is
+    refused because Λ ≥ 0 always holds, so it would pass a zero-vetoed Λ.
+
+    Raises:
+        LambdaGateError: if θ is not a finite real in (0, 1].
+    """
+    tv = _as_real(theta, "theta")
+    if not 0.0 < tv <= 1.0:
+        raise LambdaGateError(f"theta must be in (0,1] (got {tv})")
+    return tv
 
 
 @dataclass(frozen=True)
@@ -129,15 +149,13 @@ def evaluate(
     Args:
         scores: axis -> score in [0, 1].
         weights: axis -> weight > 0, summing to 1.
-        theta: advisory threshold in [0, 1].
+        theta: advisory threshold in (0, 1].
 
     Returns:
         A :class:`LambdaVerdict` carrying Λ, θ, the inputs, and the advisory
         verdict ("advisory-pass" iff Λ ≥ θ, else "advisory-fail").
     """
-    tv = _as_real(theta, "theta")
-    if tv < 0.0 or tv > 1.0:
-        raise LambdaGateError(f"theta must be in [0,1] (got {tv})")
+    tv = check_theta(theta)
     lam = lambda_score(scores, weights)
     verdict = "advisory-pass" if lam >= tv else "advisory-fail"
     return LambdaVerdict(
