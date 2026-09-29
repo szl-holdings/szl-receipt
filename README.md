@@ -197,6 +197,11 @@ Runnable end-to-end demo: [`examples/proof_carrying_inference.py`](examples/proo
   proof of correctness, safety, or conformity.
 - **Λ recomputed, not trusted.** The verifier recomputes `Λ = Π xᵢ^wᵢ` from the
   bound scores; a producer's wrong Λ fails offline (`lambda-recompute-mismatch`).
+  Every bound score is validated before the zero veto, so a zeroed axis never
+  masks an invalid one (`lambda-invalid:…`).
+- **θ lies in (0, 1].** θ = 0 would pass a zero-vetoed Λ (0 ≥ 0), so
+  `lambda_gate.evaluate` refuses it and the verifier refuses a bound θ outside
+  (0, 1], NaN or ∞ included (`theta-invalid:…`).
 - **Tier guard refuses overclaims — by allowlist, not denylist.** Spec `claims`
   are validated against a fixed allowlist of honest tokens, so no overclaim
   survives *however it is reworded*. The specific machine-checked non-theorems —
