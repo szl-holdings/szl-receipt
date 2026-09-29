@@ -243,7 +243,8 @@ def verify_pci_receipt(
       4. attestation (τ) honesty — only the UNAVAILABLE placeholder may pass;
       5. spec tier guard — refuse overclaims, allowlist claims, validate the
          invariant tokens + locked_count + tier;
-      6. Λ recomputation from the bound scores/weights + verdict consistency.
+      6. Λ recomputation from the bound scores/weights, θ in (0, 1], and
+         verdict consistency.
 
     Returns:
         A :class:`PCIResult`. ``ok`` is True only when every integrity/honesty
@@ -372,7 +373,18 @@ def verify_pci_receipt(
             energy=energy_label,
             signed=signed,
         )
-    expected = "advisory-pass" if recomputed >= float(theta) else "advisory-fail"
+    # Same θ domain as lambda_gate.evaluate: (0, 1]. θ = 0 would pass a zero-vetoed Λ.
+    try:
+        tv = lambda_gate.check_theta(theta)
+    except lambda_gate.LambdaGateError as exc:
+        return PCIResult(
+            ok=False,
+            reason=f"theta-invalid:{exc}",
+            lambda_value=recomputed,
+            energy=energy_label,
+            signed=signed,
+        )
+    expected = "advisory-pass" if recomputed >= tv else "advisory-fail"
     if lv.get("verdict") != expected:
         return PCIResult(
             ok=False,

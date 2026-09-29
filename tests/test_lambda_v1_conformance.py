@@ -168,7 +168,7 @@ _MESSAGE_CODES = (
     (re.compile(r"weight for '[^']*' must be > 0 \(got "), "LAMBDA_WEIGHT_NONPOSITIVE"),
     (re.compile(r"weights must sum to 1 \(got "), "LAMBDA_WEIGHT_SUM"),
     (
-        re.compile(r"theta (is not a real number: |is not finite: |must be in \[0,1\] \(got )"),
+        re.compile(r"theta (is not a real number: |is not finite: |must be in \(0,1\] \(got )"),
         "LAMBDA_TAU_INVALID",
     ),
 )
@@ -238,8 +238,6 @@ NO_TIE_BAND_KIND = "NO_TIE_BAND"
 AXIS_MISMATCH_KIND = "LENGTH_MISMATCH_AS_AXIS_MISMATCH"
 #: The copy checks weights before scores, element by element. v1 checks in phases, axes first.
 CHECK_ORDER_KIND = "CHECK_ORDER"
-#: theta = 0 is accepted (domain [0, 1], not (0, 1]), so a vetoed Λ = 0 passes. This fails open.
-THETA_ZERO_KIND = "THETA_ZERO_ADMITS_VETO"
 #: There is no container type check. A falsy non-list is reported as empty.
 NO_CONTAINER_TYPE_KIND = "NO_CONTAINER_TYPE_CHECK"
 
@@ -248,7 +246,6 @@ DIVERGENCE_KINDS = (
     NO_TIE_BAND_KIND,
     AXIS_MISMATCH_KIND,
     CHECK_ORDER_KIND,
-    THETA_ZERO_KIND,
     NO_CONTAINER_TYPE_KIND,
 )
 
@@ -296,8 +293,6 @@ KNOWN_DIVERGENCE: Dict[str, Divergence] = {
     "precedence_axis_before_weight": Divergence(
         "E5", CHECK_ORDER_KIND, ("error", "LAMBDA_WEIGHT_SUM"), ("BLOCK", "LAMBDA_WEIGHT_SUM")
     ),
-    # theta = 0 and Λ = 0: 0.0 >= 0.0 is an advisory pass. v1 BLOCKs with LAMBDA_TAU_INVALID.
-    "tau_zero_would_admit_veto": Divergence("E5", THETA_ZERO_KIND, None, ("GO", None)),
     # axes = null is falsy, so it reads as empty rather than as the wrong type.
     "type_axes_not_array": Divergence(
         "E5", NO_CONTAINER_TYPE_KIND, ("error", "LAMBDA_EMPTY"), ("BLOCK", "LAMBDA_EMPTY")
@@ -390,6 +385,24 @@ def test_length_mismatch_is_reported_as_axis_mismatch():
         with pytest.raises(LG.LambdaGateError, match=r"^axis mismatch: "):
             LG.lambda_score(as_axis_mapping(vector["axes"]), as_axis_mapping(vector["weights"]))
         assert KNOWN_DIVERGENCE[vector["id"]].kind == AXIS_MISMATCH_KIND
+
+
+@pytest.mark.parametrize(
+    "bad, code",
+    [
+        (float("nan"), "LAMBDA_NONFINITE_AXIS"),
+        (float("inf"), "LAMBDA_NONFINITE_AXIS"),
+        (1.5, "LAMBDA_AXIS_OUT_OF_RANGE"),
+        (-0.1, "LAMBDA_AXIS_OUT_OF_RANGE"),
+        (True, "LAMBDA_TYPE_INVALID"),
+    ],
+)
+def test_a_zero_axis_does_not_mask_an_invalid_axis(bad, code):
+    # v1 validates every axis before it computes, so the zero veto cannot hide a bad axis.
+    # The vectors have no such row at d3443b0. This is the case an upstream vector should pin.
+    for axes in ([0.0, bad], [bad, 0.0]):
+        assert observe_lambda(axes, [0.5, 0.5]) == ("error", code), axes
+        assert observe_gate(axes, [0.5, 0.5], 0.5) == ("BLOCK", code), axes
 
 
 def test_lambda_gate_error_maps_to_block_and_nothing_else_does(monkeypatch):
