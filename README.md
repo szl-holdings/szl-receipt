@@ -197,6 +197,9 @@ Runnable end-to-end demo: [`examples/proof_carrying_inference.py`](examples/proo
   proof of correctness, safety, or conformity.
 - **Λ recomputed, not trusted.** The verifier recomputes `Λ = Π xᵢ^wᵢ` from the
   bound scores; a producer's wrong Λ fails offline (`lambda-recompute-mismatch`).
+  Emission also rechecks the bound verdict, including hand-built verdicts and
+  scores mutated after evaluation. Malformed score containers and integers too
+  large for a float are refused with a reason during verification.
   Every bound score is validated before the zero veto, so a zeroed axis never
   masks an invalid one (`lambda-invalid:…`).
 - **θ lies in (0, 1].** θ = 0 would pass a zero-vetoed Λ (0 ≥ 0), so

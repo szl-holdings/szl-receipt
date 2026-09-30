@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
+import json
 import math
 
 import pytest
@@ -64,7 +66,35 @@ def test_evaluate_rejects_theta_at_or_below_zero():
     assert lg.evaluate({"a": 1.0}, {"a": 1.0}, theta=1.0).verdict == "advisory-pass"
 
 
-@pytest.mark.parametrize("bad", [1.5, -0.1, float("nan"), float("inf"), True, "0.5", None])
+def test_evaluate_rejects_theta_above_one():
+    for theta in (math.nextafter(1.0, 2.0), 1.5, 10**400):
+        with pytest.raises(lg.LambdaGateError, match=r"theta must be in \(0,1\]"):
+            lg.evaluate({"a": 1.0}, {"a": 1.0}, theta=theta)
+
+
+def test_int_too_large_for_a_float_is_a_lambda_gate_error():
+    # Such an int is finite but outside every Λ domain. It must never escape as OverflowError.
+    scores = {"a": 0.5, "b": 0.5}
+    with pytest.raises(lg.LambdaGateError, match=r"weights must sum to 1"):
+        lg.lambda_score(scores, {"a": 10**400, "b": 0.5})
+    with pytest.raises(lg.LambdaGateError, match=r"weight for 'a' must be > 0"):
+        lg.lambda_score(scores, {"a": -(10**400), "b": 0.5})
+    with pytest.raises(lg.LambdaGateError, match=r"score for 'b' must be in \[0,1\]"):
+        lg.lambda_score({"a": 0.5, "b": 10**400}, {"a": 0.5, "b": 0.5})
+
+
+@pytest.mark.parametrize(
+    "scores, weights",
+    [(None, {"a": 1.0}), ([0.5], [1.0]), ({"a": 0.5}, [1.0]), ("a", {"a": 1.0})],
+)
+def test_lambda_score_rejects_non_mapping_containers(scores, weights):
+    with pytest.raises(lg.LambdaGateError, match=r"scores and weights must be mappings"):
+        lg.lambda_score(scores, weights)
+
+
+@pytest.mark.parametrize(
+    "bad", [1.5, -0.1, float("nan"), float("inf"), 10**400, True, "0.5", None]
+)
 def test_zero_score_does_not_mask_an_invalid_score(bad):
     # Every score is validated before the non-compensatory zero collapse, in any dict order.
     weights = {"a": 0.5, "b": 0.5}
@@ -167,16 +197,20 @@ def test_wrong_lambda_is_caught_by_recompute():
     assert res.ok is False and res.reason == "lambda-recompute-mismatch"
 
 
-def _signed_with_lambda_verdict(scores, lam, theta, verdict):
+def _signed_with_lambda_verdict(scores, lam, theta, verdict, weights=None):
     # A self-signed receipt carrying a hand-built Λ-verdict that evaluate() would refuse.
+    return _signed_with_raw_lambda_verdict({
+        "kernel": "szl-lambda-gate", "form": "weighted-geometric-mean",
+        "scores": scores, "weights": {"a": 0.5, "b": 0.5} if weights is None else weights,
+        "theta": theta, "lambda": lam, "verdict": verdict, "note": "x",
+    })
+
+
+def _signed_with_raw_lambda_verdict(lambda_verdict):
     priv, pub = generate_keypair()
     extra = {
         "pci_profile": PCI_PROFILE,
-        "lambda_verdict": {
-            "kernel": "szl-lambda-gate", "form": "weighted-geometric-mean",
-            "scores": scores, "weights": {"a": 0.5, "b": 0.5},
-            "theta": theta, "lambda": lam, "verdict": verdict, "note": "x",
-        },
+        "lambda_verdict": lambda_verdict,
         "spec": SpecRef().to_dict(),
         "attestation": {"status": "UNAVAILABLE"},
     }
@@ -191,9 +225,13 @@ def _signed_with_lambda_verdict(scores, lam, theta, verdict):
     "theta, verdict",
     [
         (0.0, "advisory-pass"),   # the fail-open case: a zero-vetoed Λ passing θ = 0
+        (0.0, "advisory-fail"),   # θ is checked before the verdict, whichever verdict is bound
         (-0.0, "advisory-pass"),
         (-0.5, "advisory-pass"),
+        (float("-inf"), "advisory-pass"),
+        (math.nextafter(1.0, 2.0), "advisory-fail"),
         (1.5, "advisory-fail"),
+        (10**400, "advisory-fail"),
         (float("nan"), "advisory-fail"),
         (float("inf"), "advisory-fail"),
     ],
@@ -211,6 +249,60 @@ def test_verify_refuses_zero_score_masking_an_invalid_score():
     res = verify_pci_receipt(r, public_key_pem=pub)
     assert res.ok is False
     assert res.reason.startswith("lambda-invalid:score for 'b' must be in [0,1]")
+
+
+@pytest.mark.parametrize(
+    "lambda_verdict, reason",
+    [
+        # a zero ahead of an int too large for a float
+        ({"scores": {"a": 0.0, "b": 10**400}, "weights": {"a": 0.5, "b": 0.5},
+          "theta": 0.5, "lambda": 0.0, "verdict": "advisory-fail"}, "lambda-invalid:"),
+        # list-shaped scores and weights
+        ({"scores": [0.5], "weights": [0.5], "theta": 0.5, "lambda": 0.5,
+          "verdict": "advisory-pass"}, "lambda-invalid:"),
+        # a recorded Λ too large for a float
+        ({"scores": {"a": 0.5}, "weights": {"a": 1.0}, "theta": 0.5, "lambda": 10**309,
+          "verdict": "advisory-pass"}, "lambda-recompute-mismatch"),
+        # the Λ-verdict itself is not a mapping
+        ([1, 2], "lambda-invalid:"),
+    ],
+)
+def test_verify_fails_closed_on_a_malformed_lambda_verdict(lambda_verdict, reason):
+    # The verifier refuses with a reason. It never raises.
+    r, pub = _signed_with_raw_lambda_verdict(lambda_verdict)
+    res = verify_pci_receipt(json.loads(json.dumps(r)), public_key_pem=pub)
+    assert res.ok is False
+    assert res.reason.startswith(reason)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"theta": 0.0},
+        {"theta": 10**400},
+        {"lam": 0.99},
+        {"lam": 10**400},
+        {"verdict": "advisory-fail"},
+        {"scores": {"safety": 0.0, "provenance": float("nan")}},
+    ],
+)
+def test_emit_refuses_a_hand_built_invalid_lambda_verdict(changes):
+    forged = dataclasses.replace(_good_verdict(), **changes)
+    with pytest.raises(lg.LambdaGateError):
+        emit_pci_receipt(
+            model_id="m", input_digest="i", output_digest="o", policy_id="p",
+            lambda_verdict=forged,
+        )
+
+
+def test_emit_rechecks_mutated_verdict_scores():
+    verdict = _good_verdict()
+    verdict.scores["safety"] = 0.0
+    with pytest.raises(lg.LambdaGateError):
+        emit_pci_receipt(
+            model_id="m", input_digest="i", output_digest="o", policy_id="p",
+            lambda_verdict=verdict,
+        )
 
 
 def test_tier_guard_refuses_overclaims():

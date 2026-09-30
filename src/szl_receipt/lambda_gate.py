@@ -50,7 +50,12 @@ class LambdaGateError(ValueError):
 def _as_real(value: object, what: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise LambdaGateError(f"{what} is not a real number: {value!r}")
-    fv = float(value)
+    try:
+        fv = float(value)
+    except OverflowError:
+        # Python ints are finite even when binary64 cannot represent them.
+        # Keep the int so the caller rejects it using the appropriate domain.
+        return value
     if not math.isfinite(fv):
         raise LambdaGateError(f"{what} is not finite: {value!r}")
     return fv
@@ -68,6 +73,8 @@ def lambda_score(
     Raises:
         LambdaGateError: on any ill-formed input. Λ is never guessed.
     """
+    if not isinstance(scores, Mapping) or not isinstance(weights, Mapping):
+        raise LambdaGateError("scores and weights must be mappings")
     if not scores or not weights:
         raise LambdaGateError("scores and weights must both be non-empty")
     if set(scores) != set(weights):
@@ -80,7 +87,10 @@ def lambda_score(
         wv = _as_real(w, f"weight for {axis!r}")
         if wv <= 0.0:
             raise LambdaGateError(f"weight for {axis!r} must be > 0 (got {wv})")
-        wsum += wv
+        try:
+            wsum += wv
+        except OverflowError:
+            raise LambdaGateError("weights must sum to 1 (got an overflowing sum)") from None
     if abs(wsum - 1.0) > WEIGHT_SUM_TOL:
         raise LambdaGateError(f"weights must sum to 1 (got {wsum})")
 
