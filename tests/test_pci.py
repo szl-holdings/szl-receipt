@@ -83,6 +83,22 @@ def test_int_too_large_for_a_float_is_a_lambda_gate_error():
         lg.lambda_score({"a": 0.5, "b": 10**400}, {"a": 0.5, "b": 0.5})
 
 
+def test_integer_rejection_does_not_format_unbounded_decimal_digits():
+    huge = 10**4300
+    for value in (huge, -huge):
+        with pytest.raises(lg.LambdaGateError):
+            lg.lambda_score({"a": value}, {"a": 1.0})
+        with pytest.raises(lg.LambdaGateError):
+            lg.check_theta(value)
+        with pytest.raises(lg.LambdaGateError):
+            emit_pci_receipt(
+                model_id="m", input_digest="i", output_digest="o", policy_id="p",
+                lambda_verdict=dataclasses.replace(_good_verdict(), theta=value),
+            )
+    with pytest.raises(lg.LambdaGateError):
+        lg.lambda_score({"a": 0.5}, {"a": -huge})
+
+
 @pytest.mark.parametrize(
     "scores, weights",
     [(None, {"a": 1.0}), ([0.5], [1.0]), ({"a": 0.5}, [1.0]), ("a", {"a": 1.0})],
