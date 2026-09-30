@@ -10,7 +10,7 @@ import math
 
 import pytest
 
-from szl_receipt import generate_keypair
+from szl_receipt import Receipt, generate_keypair, sign_receipt
 from szl_receipt import lambda_gate as lg
 from szl_receipt.pci import (
     FORBIDDEN_CLAIMS,
@@ -420,10 +420,24 @@ def test_verify_refuses_handcrafted_nan_energy():
     }
     r = emit_receipt(
         model_id="m", input_digest="i", output_digest="o", policy_id="p",
-        organ="a11oy", private_key_pem=priv, energy_joules=float("nan"), extra=extra,
+        organ="a11oy", private_key_pem=None, energy_joules=0.0, extra=extra,
     )
+    # The statement builder now refuses NaN predicates. Handcraft the malformed
+    # body below that boundary so this still exercises the PCI energy check,
+    # with a valid statement and a correctly bound test signature.
+    r["body"]["energy"] = {"joules": float("nan"), "unit": "J"}
+    raw = Receipt(kind=r["body"]["kind"], body=r["body"])
+    r["digest"] = raw.digest()
+    r["envelope"] = sign_receipt(raw, private_key_pem=priv, organ="a11oy")
+    r["statement"]["subject"][0]["digest"]["sha256"] = r["digest"]
     res = verify_pci_receipt(r, public_key_pem=pub)
     assert res.ok is False and res.reason == "energy-malformed"
+
+
+def test_spine_emitter_refuses_nan_statement_metadata():
+    with pytest.raises(ValueError):
+        emit_receipt(model_id="m", input_digest="i", output_digest="o", policy_id="p",
+                     private_key_pem=None, energy_joules=float("nan"))
 
 
 def test_lambda_rejects_non_finite():

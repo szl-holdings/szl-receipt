@@ -29,8 +29,11 @@ the protobuf layer is the validation authority, not the serialiser.
 """
 from __future__ import annotations
 
+import base64
+import json
 from typing import Any, List, Mapping, Sequence
 
+from google.protobuf.json_format import ParseDict, ParseError
 from in_toto_attestation.v1.resource_descriptor import ResourceDescriptor
 from in_toto_attestation.v1.statement import STATEMENT_TYPE_URI, Statement
 
@@ -65,6 +68,9 @@ def statement_from_parts(
         raise ValueError("predicate_type must be a non-empty string")
     if not isinstance(predicate, Mapping) or not predicate:
         raise ValueError("predicate must be a non-empty mapping")
+    # Protobuf Struct accepts NaN/infinity; JSON evidence must not. Validate
+    # representability without replacing the caller's canonical numeric values.
+    json.dumps(dict(predicate), allow_nan=False)
     if (
         not isinstance(subjects, Sequence)
         or isinstance(subjects, (str, bytes))
@@ -81,10 +87,31 @@ def statement_from_parts(
             raise ValueError(f"subject {index} requires a non-empty name")
         if not isinstance(digest, Mapping) or not digest:
             raise ValueError(f"subject {index} requires at least one digest")
-        descriptor = ResourceDescriptor(
-            name=name,
-            digest={str(alg): str(value) for alg, value in digest.items()},
-        )
+        if any(
+            not isinstance(alg, str) or not alg
+            or not isinstance(value, str) or not value
+            for alg, value in digest.items()
+        ):
+            raise ValueError(f"subject {index} digest keys and values must be non-empty strings")
+        # Validate supported optional descriptor fields too; projecting to just
+        # name/digest would hide malformed fields on an otherwise bound subject.
+        for field in ("uri", "downloadLocation", "download_location", "mediaType", "media_type", "content"):
+            if field in subject and not isinstance(subject[field], str):
+                raise ValueError(f"subject {index} {field} must be a string")
+        if "annotations" in subject and not isinstance(subject["annotations"], dict):
+            raise ValueError(f"subject {index} annotations must be an object")
+        raw_subject = dict(subject)
+        raw_subject["digest"] = dict(digest)
+        json.dumps(raw_subject, allow_nan=False)
+        if "content" in subject:
+            # The protobuf JSON parser otherwise ignores non-base64 characters.
+            content = subject["content"]
+            base64.b64decode(content + "=" * (-len(content) % 4), altchars=b"-_", validate=True)
+        descriptor = ResourceDescriptor()
+        try:
+            ParseDict(raw_subject, descriptor.pb, ignore_unknown_fields=True)
+        except ParseError:
+            raise ValueError(f"subject {index} has invalid resource descriptor fields") from None
         descriptor.validate()
         descriptors.append(descriptor.pb)
     statement = Statement(

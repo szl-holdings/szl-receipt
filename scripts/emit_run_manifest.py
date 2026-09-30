@@ -28,14 +28,37 @@ def die(msg: str) -> "SystemExit":
     raise SystemExit(1)
 
 
+def unique_object(pairs: list) -> dict:
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate JSON object member")
+        obj[key] = value
+    return obj
+
+
+def reject_constant(value: str) -> None:
+    raise ValueError("non-finite JSON number")
+
+
 def load_json(p: str, label: str) -> dict:
     fp = pathlib.Path(p)
     if not fp.is_file():
         die(f"{label} not found: {fp}")
     try:
-        return json.loads(fp.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        die(f"{label} is not valid JSON: {e}")
+        value = json.loads(
+            fp.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+        # Exponent overflow (e.g. 1e9999) bypasses parse_constant, including in
+        # supplemental evidence fields. Check the whole decoded JSON domain.
+        json.dumps(value, allow_nan=False)
+    except (OSError, ValueError, RecursionError):
+        die(f"{label} must be readable UTF-8 JSON with unique object members and finite numbers")
+    if not isinstance(value, dict):
+        die(f"{label} must be a JSON object")
+    return value
 
 
 def sha256_file(p: pathlib.Path) -> str:
@@ -71,6 +94,13 @@ def main() -> int:
     for field in ("pass_rate", "heldout_passed", "refusal_no_regression"):
         if field not in ev:
             die(f"held-out eval result missing required field: {field}")
+    for field in ("heldout_passed", "refusal_no_regression"):
+        if type(ev[field]) is not bool:
+            die(f"held-out eval result {field} must be a JSON boolean")
+    rate = ev["pass_rate"]
+    # Bounds also reject NaN/infinity and huge ints without a float conversion.
+    if type(rate) not in (int, float) or not 0 <= rate <= 1:
+        die("held-out eval result pass_rate must be a finite number in [0, 1]")
     bp = pathlib.Path(a.bom)
     if not bp.is_file():
         die(f"BOM not found: {bp}")
@@ -89,8 +119,8 @@ def main() -> int:
         },
         "eval": {
             "pass_rate": ev["pass_rate"],
-            "heldout_passed": bool(ev["heldout_passed"]),
-            "refusal_no_regression": bool(ev["refusal_no_regression"]),
+            "heldout_passed": ev["heldout_passed"],
+            "refusal_no_regression": ev["refusal_no_regression"],
         },
         "model_bom_sha256": bom_sha,
         "signatures": {"manifest": bool(a.signed_manifest)},
@@ -100,7 +130,7 @@ def main() -> int:
     }
     op = pathlib.Path(a.out)
     op.parent.mkdir(parents=True, exist_ok=True)
-    op.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    op.write_text(json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     print(f"wrote {op} (bom sha256 {bom_sha[:16]}..., kind={a.release_kind})")
     if not a.signed_manifest:
         print("::notice::signatures.manifest=false — sign job must re-emit with --signed-manifest")
