@@ -159,6 +159,7 @@ def as_axis_mapping(values: Any) -> Any:
 
 #: Classifies a LambdaGateError message. Each pattern is matched at the start of the message.
 _MESSAGE_CODES = (
+    (re.compile(r"scores and weights must be mappings\Z"), "LAMBDA_TYPE_INVALID"),
     (re.compile(r"scores and weights must both be non-empty\Z"), "LAMBDA_EMPTY"),
     (re.compile(r"axis mismatch: "), AXIS_MISMATCH),
     (re.compile(r"(score|weight) for '[^']*' is not a real number: "), "LAMBDA_TYPE_INVALID"),
@@ -238,15 +239,12 @@ NO_TIE_BAND_KIND = "NO_TIE_BAND"
 AXIS_MISMATCH_KIND = "LENGTH_MISMATCH_AS_AXIS_MISMATCH"
 #: The copy checks weights before scores, element by element. v1 checks in phases, axes first.
 CHECK_ORDER_KIND = "CHECK_ORDER"
-#: There is no container type check. A falsy non-list is reported as empty.
-NO_CONTAINER_TYPE_KIND = "NO_CONTAINER_TYPE_CHECK"
 
 DIVERGENCE_KINDS = (
     WEIGHT_SUM_TOL_KIND,
     NO_TIE_BAND_KIND,
     AXIS_MISMATCH_KIND,
     CHECK_ORDER_KIND,
-    NO_CONTAINER_TYPE_KIND,
 )
 
 
@@ -292,10 +290,6 @@ KNOWN_DIVERGENCE: Dict[str, Divergence] = {
     # [1.5, 0.9] with w = [2, 2]: the weight sum is checked before any score.
     "precedence_axis_before_weight": Divergence(
         "E5", CHECK_ORDER_KIND, ("error", "LAMBDA_WEIGHT_SUM"), ("BLOCK", "LAMBDA_WEIGHT_SUM")
-    ),
-    # axes = null is falsy, so it reads as empty rather than as the wrong type.
-    "type_axes_not_array": Divergence(
-        "E5", NO_CONTAINER_TYPE_KIND, ("error", "LAMBDA_EMPTY"), ("BLOCK", "LAMBDA_EMPTY")
     ),
 }
 
@@ -403,6 +397,20 @@ def test_a_zero_axis_does_not_mask_an_invalid_axis(bad, code):
     for axes in ([0.0, bad], [bad, 0.0]):
         assert observe_lambda(axes, [0.5, 0.5]) == ("error", code), axes
         assert observe_gate(axes, [0.5, 0.5], 0.5) == ("BLOCK", code), axes
+
+
+@pytest.mark.parametrize(
+    "axes, weights, tau, code",
+    [
+        ([0.0, 10**400], [0.5, 0.5], 0.5, "LAMBDA_AXIS_OUT_OF_RANGE"),
+        ([0.0, -(10**400)], [0.5, 0.5], 0.5, "LAMBDA_AXIS_OUT_OF_RANGE"),
+        ([0.5], [10**400], 0.5, "LAMBDA_WEIGHT_SUM"),
+        ([0.5], [-(10**400)], 0.5, "LAMBDA_WEIGHT_NONPOSITIVE"),
+        ([0.5], [1.0], 10**400, "LAMBDA_TAU_INVALID"),
+    ],
+)
+def test_large_finite_integers_are_rejected_by_domain(axes, weights, tau, code):
+    assert observe_gate(axes, weights, tau) == ("BLOCK", code)
 
 
 def test_lambda_gate_error_maps_to_block_and_nothing_else_does(monkeypatch):

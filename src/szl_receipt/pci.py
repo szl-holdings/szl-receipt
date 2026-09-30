@@ -175,6 +175,21 @@ def emit_pci_receipt(
             "lambda_verdict must be a lambda_gate.LambdaVerdict "
             "(use lambda_gate.evaluate(scores, weights, theta))"
         )
+    # A frozen dataclass still permits hand-built fields and mutable score dicts.
+    # Validate the inputs before snapshotting, then check the exact bound snapshot.
+    if not isinstance(lambda_verdict.scores, Mapping) or not isinstance(lambda_verdict.weights, Mapping):
+        raise lambda_gate.LambdaGateError("scores and weights must be mappings")
+    bound_verdict = lambda_verdict.to_dict()
+    evaluated = lambda_gate.evaluate(
+        bound_verdict["scores"], bound_verdict["weights"], bound_verdict["theta"]
+    )
+    recorded = lambda_gate._as_real(bound_verdict["lambda"], "lambda")
+    if not 0.0 <= recorded <= 1.0 or not math.isclose(
+        evaluated.lam, recorded, rel_tol=0.0, abs_tol=LAMBDA_RECOMPUTE_TOL
+    ):
+        raise lambda_gate.LambdaGateError("lambda-recompute-mismatch")
+    if bound_verdict["verdict"] != evaluated.verdict:
+        raise lambda_gate.LambdaGateError("lambda-verdict-inconsistent")
     spec = spec or SpecRef()
 
     # Energy honesty at the source: never mint a fabricated/non-finite joule.
@@ -204,7 +219,7 @@ def emit_pci_receipt(
 
     pci_extra: Dict[str, Any] = {
         "pci_profile": PCI_PROFILE,
-        "lambda_verdict": lambda_verdict.to_dict(),
+        "lambda_verdict": bound_verdict,
         "spec": spec.to_dict(),
         "attestation": att,
     }
@@ -335,7 +350,12 @@ def verify_pci_receipt(
         )
 
     # (6) Λ recomputation from the BOUND scores/weights
-    lv = extra.get("lambda_verdict") or {}
+    lv = extra.get("lambda_verdict", {})
+    if not isinstance(lv, Mapping):
+        return PCIResult(
+            ok=False, reason="lambda-invalid:lambda_verdict must be a mapping",
+            energy=energy_label, signed=signed,
+        )
     try:
         recomputed = lambda_gate.lambda_score(
             lv.get("scores", {}), lv.get("weights", {})
@@ -353,9 +373,13 @@ def verify_pci_receipt(
         return PCIResult(
             ok=False, reason="lambda-missing", energy=energy_label, signed=signed
         )
-    if not math.isclose(
-        recomputed, float(recorded), rel_tol=0.0, abs_tol=LAMBDA_RECOMPUTE_TOL
-    ):
+    try:
+        matches = math.isclose(
+            recomputed, float(recorded), rel_tol=0.0, abs_tol=LAMBDA_RECOMPUTE_TOL
+        )
+    except OverflowError:
+        matches = False
+    if not matches:
         return PCIResult(
             ok=False,
             reason="lambda-recompute-mismatch",
