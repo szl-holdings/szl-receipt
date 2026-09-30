@@ -61,6 +61,12 @@ def _as_real(value: object, what: str) -> float:
     return fv
 
 
+def _display_real(value: float) -> str:
+    if isinstance(value, int) and value.bit_length() > 1024:
+        return "an integer too large for a float"
+    return str(value)
+
+
 def lambda_score(
     scores: Mapping[str, float], weights: Mapping[str, float]
 ) -> float:
@@ -86,7 +92,7 @@ def lambda_score(
     for axis, w in weights.items():
         wv = _as_real(w, f"weight for {axis!r}")
         if wv <= 0.0:
-            raise LambdaGateError(f"weight for {axis!r} must be > 0 (got {wv})")
+            raise LambdaGateError(f"weight for {axis!r} must be > 0 (got {_display_real(wv)})")
         try:
             wsum += wv
         except OverflowError:
@@ -98,7 +104,7 @@ def lambda_score(
     for axis, x in scores.items():
         xv = _as_real(x, f"score for {axis!r}")
         if xv < 0.0 or xv > 1.0:
-            raise LambdaGateError(f"score for {axis!r} must be in [0,1] (got {xv})")
+            raise LambdaGateError(f"score for {axis!r} must be in [0,1] (got {_display_real(xv)})")
         xs[axis] = xv
 
     if 0.0 in xs.values():
@@ -120,7 +126,7 @@ def check_theta(theta: object) -> float:
     """
     tv = _as_real(theta, "theta")
     if not 0.0 < tv <= 1.0:
-        raise LambdaGateError(f"theta must be in (0,1] (got {tv})")
+        raise LambdaGateError(f"theta must be in (0,1] (got {_display_real(tv)})")
     return tv
 
 
