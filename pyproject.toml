@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "szl-receipt"
+name = "szl-receipt-dsse"
 version = "0.3.0"
 description = "Shared signed-receipt library for SZL components — DSSE/ECDSA-P256-SHA256 signing on pinned maintained libraries (in-toto-attestation 0.9.3 + cryptography 50.0.1; cosign-compatible, UNSIGNED-honest fallback) plus in-toto/SLSA-shaped attestation and EU AI Act / NIST AI RMF compliance-evidence mapping."
 readme = "README.md"
