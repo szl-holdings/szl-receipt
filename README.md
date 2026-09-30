@@ -64,6 +64,25 @@ ok, detail = verify_receipt(env2, public_key_pem=pub_pem)   # -> (True, "ok")
 
 ## Envelope schema
 
+`verify_statement` validates the complete statement structure and every subject
+digest mapping before checking the caller's expected digest. Malformed statements
+return `False`; digest algorithm labels and values must be non-empty strings and
+are never coerced. Every subject needs a non-empty name, matching the existing
+SZL builder contract. Present optional descriptor fields must have valid types,
+content must be base64, and predicate/subject values must be finite JSON data.
+Unknown descriptor extensions remain accepted. Structural failures return
+`invalid-statement-structure`, including missing subjects. Success checks
+structure and digest binding only: signature
+verification, signer trust, and authorization remain separate. An unsigned receipt
+still returns `unsigned-honest` from `verify_receipt`.
+
+The run-manifest emitter requires a JSON object with exact boolean
+`heldout_passed` and `refusal_no_regression` verdicts and a finite numeric
+`pass_rate` in `[0, 1]` (booleans are not rates). Duplicate JSON members are
+rejected. Invalid evidence fails before output is written; valid negative
+verdicts stay negative, and signature/conformance declarations retain their
+existing false defaults.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `payloadType` | str | DSSE payload type URI |

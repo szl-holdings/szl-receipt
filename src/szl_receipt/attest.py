@@ -39,10 +39,11 @@ HONESTY DOCTRINE (identical to the receipt core — never weakened):
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+import json
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from ._canonical import canonical_json
-from ._intoto import STATEMENT_TYPE_URI, statement_from_parts
+from ._intoto import STATEMENT_TYPE_URI, statement_from_parts, statement_ite6_errors
 
 # In-toto Statement envelope type (stable, ecosystem-standard URI) — sourced
 # from the pinned in-toto-attestation 0.9.3 bindings, not re-typed by hand.
@@ -298,6 +299,10 @@ def verify_statement(
 ) -> Tuple[bool, str]:
     """Confirm *statement* is a valid in-toto Statement bound to *expected_digest*.
 
+    Validates every subject and the predicate through the maintained ITE-6
+    bindings before comparing a digest. Success establishes structure and digest
+    binding only; it does not verify a signature, signer trust, or authorization.
+
     Args:
         statement: The Statement dict (as from :func:`build_statement`).
         expected_digest: The digest the caller has independently re-derived from
@@ -313,17 +318,25 @@ def verify_statement(
         return (False, "not-a-statement")
     if statement.get("_type") != IN_TOTO_STATEMENT_TYPE:
         return (False, "not-an-intoto-statement")
+    if not isinstance(expected_digest, str) or not expected_digest:
+        return (False, "invalid-expected-digest")
+    if not isinstance(digest_alg, str) or not digest_alg:
+        return (False, "invalid-digest-algorithm")
     if predicate_type is not None and statement.get("predicateType") != predicate_type:
         return (False, "unexpected-predicate-type")
-    subjects = statement.get("subject") or []
-    if not isinstance(subjects, Sequence):
-        return (False, "no-subject")
-    subj_digests = [
-        s.get("digest", {}).get(digest_alg)
-        for s in subjects
-        if isinstance(s, dict)
-    ]
-    if expected_digest not in subj_digests:
+    try:
+        # Include extensions in the JSON-domain check without rewriting bytes.
+        json.dumps(statement, allow_nan=False)
+        if statement_ite6_errors(statement):
+            return (False, "invalid-statement-structure")
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        # Protobuf conversion can also reject unrepresentable predicate values.
+        # Keep malformed input fail-soft without echoing untrusted evidence.
+        return (False, "invalid-statement-structure")
+    if not any(
+        subject["digest"].get(digest_alg) == expected_digest
+        for subject in statement["subject"]
+    ):
         return (False, "subject-digest-not-bound")
     return (True, "ok")
 
