@@ -49,7 +49,7 @@ lengths over the **decoded** payload bytes), byte-for-byte compatible with
 ## Install
 
 ```bash
-pip install szl-receipt
+pip install szl-receipt-dsse
 ```
 
 Or from source:
