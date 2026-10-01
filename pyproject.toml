@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "szl-receipt-dsse"
-version = "0.3.2"
-description = "Shared signed-receipt library for SZL components — DSSE/ECDSA-P256-SHA256 signing on pinned maintained libraries (in-toto-attestation 0.9.3 + cryptography 50.0.1; cosign-compatible, UNSIGNED-honest fallback) plus in-toto/SLSA-shaped attestation and EU AI Act / NIST AI RMF compliance-evidence mapping."
+version = "0.3.3"
+description = "Shared signed-receipt library for SZL components — DSSE/ECDSA-P256-SHA256 signing on maintained libraries (verified against in-toto-attestation 0.9.3 + cryptography 50.0.1; cosign-compatible, UNSIGNED-honest fallback) plus in-toto/SLSA-shaped attestation and EU AI Act / NIST AI RMF compliance-evidence mapping."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
@@ -18,8 +18,12 @@ classifiers = [
 ]
 # Pinned per the v11 doctrine §7.1 (no hand-rolled DSSE/crypto; B-08).
 dependencies = [
-    "cryptography==50.0.1",
-    "in-toto-attestation==0.9.3",
+    # Verified against cryptography 50.0.1 and in-toto-attestation 0.9.3 (see
+    # [tool.szl.release].verified_against). Ranges, not exact pins: a library
+    # that pins exact versions cannot coexist with any other package in the
+    # same environment that resolves either dependency differently.
+    "cryptography>=42,<60",
+    "in-toto-attestation>=0.9.3,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -40,4 +44,5 @@ packages = ["src/szl_receipt"]
 testpaths = ["tests"]
 
 [tool.szl.release]
-import_names = ["szl_receipt"] # wheel top-level import names; the release gate fails if the built wheel differs
+import_names = ["szl_receipt"]
+verified_against = { cryptography = "50.0.1", in-toto-attestation = "0.9.3" } # exact versions the DSSE/PAE conformance suite was last run against # wheel top-level import names; the release gate fails if the built wheel differs
