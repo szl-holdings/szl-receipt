@@ -1,4 +1,4 @@
-[![PyPI](https://img.shields.io/pypi/v/szl-receipt-dsse)](https://pypi.org/project/szl-receipt-dsse/) [![Python](https://img.shields.io/pypi/pyversions/szl-receipt-dsse)](https://pypi.org/project/szl-receipt-dsse/) [![CI](https://github.com/szl-holdings/szl-receipt/actions/workflows/base-python-ci.yml/badge.svg)](https://github.com/szl-holdings/szl-receipt/actions/workflows/base-python-ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/szl-receipt-dsse)](https://pypi.org/project/szl-receipt-dsse/) [![Python](https://img.shields.io/pypi/pyversions/szl-receipt-dsse)](https://pypi.org/project/szl-receipt-dsse/) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/szl-holdings/szl-receipt/badge)](https://scorecard.dev/viewer/?uri=github.com/szl-holdings/szl-receipt) [![CI](https://github.com/szl-holdings/szl-receipt/actions/workflows/base-python-ci.yml/badge.svg)](https://github.com/szl-holdings/szl-receipt/actions/workflows/base-python-ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 ## Quickstart
 
