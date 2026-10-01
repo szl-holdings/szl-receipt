@@ -1,8 +1,26 @@
+[![PyPI](https://img.shields.io/pypi/v/szl-receipt-dsse)](https://pypi.org/project/szl-receipt-dsse/) [![Python](https://img.shields.io/pypi/pyversions/szl-receipt-dsse)](https://pypi.org/project/szl-receipt-dsse/) [![CI](https://github.com/szl-holdings/szl-receipt/actions/workflows/base-python-ci.yml/badge.svg)](https://github.com/szl-holdings/szl-receipt/actions/workflows/base-python-ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+## Quickstart
+
+```bash
+pip install szl-receipt-dsse
+```
+
+```python
+from szl_receipt import Receipt, generate_keypair, sign_receipt, verify_receipt
+
+priv_pem, pub_pem = generate_keypair()
+receipt = Receipt(kind="policy-decision", body={"action": "allow", "policy": "v3"})
+envelope = sign_receipt(receipt, priv_pem, organ="my-org", keyid="key-1")
+verify_receipt(envelope, pub_pem)  # signature + hash chain verify
+```
+
+---
+
 > **SZL Holdings** · Doctrine v11 · Λ = Conjecture 1 (advisory, never "green"/theorem) · canonical [a-11-oy.com](https://a-11-oy.com)
 
 # szl-receipt
 <!-- szl:header v1 -->
-<!-- badges: add this repo's CI / release / status badges here -->
 [![org: szl-holdings](https://img.shields.io/badge/org-szl--holdings-black)](https://github.com/szl-holdings)
 [![doctrine](https://img.shields.io/badge/doctrine-control%20before%20action%20%C2%B7%20evidence%20after-blue)](https://a-11-oy.com)
 
