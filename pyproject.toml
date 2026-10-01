@@ -44,5 +44,5 @@ packages = ["src/szl_receipt"]
 testpaths = ["tests"]
 
 [tool.szl.release]
-import_names = ["szl_receipt"]
-verified_against = { cryptography = "50.0.1", in-toto-attestation = "0.9.3" } # exact versions the DSSE/PAE conformance suite was last run against # wheel top-level import names; the release gate fails if the built wheel differs
+import_names = ["szl_receipt"] # wheel top-level import names; the release gate fails if the built wheel differs
+verified_against = { cryptography = "50.0.1", in-toto-attestation = "0.9.3" } # exact versions the DSSE/PAE conformance suite was last run against
