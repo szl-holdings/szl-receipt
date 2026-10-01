@@ -38,11 +38,14 @@ Shared signed-receipt library for SZL components. Provides cryptographically
 signed per-inference receipts using **DSSE/ECDSA-P256-SHA256** (cosign-compatible),
 with an **UNSIGNED-honest** fallback when no signing key is present.
 
-Built on pinned, maintained libraries — no hand-rolled DSSE/crypto:
+Built on maintained libraries — no hand-rolled DSSE/crypto:
 [`in-toto-attestation` 0.9.3](https://pypi.org/project/in-toto-attestation/)
 (ITE-6 Statement/predicate bindings) for attestation construction and
 [`cryptography` 50.0.1](https://pypi.org/project/cryptography/) for the ECDSA
-P-256 signature primitive. The DSSE PAE is the spec encoding (ASCII decimal
+P-256 signature primitive. Those are the exact versions the conformance suite
+was last run against (`[tool.szl.release].verified_against`); the package
+declares compatible ranges (`cryptography>=42,<60`, `in-toto-attestation>=0.9.3,<1.0`)
+rather than exact pins so it can share an environment with other software. The DSSE PAE is the spec encoding (ASCII decimal
 lengths over the **decoded** payload bytes), byte-for-byte compatible with
 `cosign verify-blob`.
 
