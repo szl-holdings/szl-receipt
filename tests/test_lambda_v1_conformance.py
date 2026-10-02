@@ -52,11 +52,11 @@ VECTORS_PATH = FIXTURES / "lambda_v1_vectors.json"
 SOURCE_PATH = FIXTURES / "lambda_v1_vectors.SOURCE"
 
 #: The szl-lambda-gate merge commit of FF-01 (PR #53), which the fixture is copied from.
-FF01_MERGE_SHA = "d3443b0539ad9fdbd407a0b0bf0454b416102089"
+FF01_MERGE_SHA = "6a874e11ab948a47e982be3651b8021ba6b82e19"
 #: spec/szl.lambda.v1.json#/vectors/sha256 at FF01_MERGE_SHA: the SHA-256 over canonical JSON.
-VECTORS_CANONICAL_SHA256 = "2a3fef3d17ca36142139fa6bd08b7f0e41526c749abc7cfd810b77cc50ab5d1f"
+VECTORS_CANONICAL_SHA256 = "61bfb0410b9f0eaab0eb9f22f29cb7cb13cfde8c083fe308d895565d6ba9ebd4"
 #: spec/szl.lambda.v1.json#/vectors/count at FF01_MERGE_SHA.
-VECTORS_COUNT = 50
+VECTORS_COUNT = 60
 #: spec/szl.lambda.v1.json#/weight_sum_tol at FF01_MERGE_SHA. The spec is not vendored; this value is.
 V1_WEIGHT_SUM_TOL = 1e-12
 
