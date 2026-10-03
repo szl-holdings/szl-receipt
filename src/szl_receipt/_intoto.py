@@ -149,6 +149,6 @@ def statement_ite6_errors(statement: Any) -> List[str]:
             predicate_type=statement.get("predicateType") or "",
             predicate=predicate if isinstance(predicate, Mapping) else {},
         )
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, OverflowError, RecursionError) as exc:
         return [f"statement-ite6-invalid: {exc}"]
     return []
