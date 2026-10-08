@@ -166,7 +166,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: signed-release, path: release/ }
 
-  # ── Gate 5: adversarial conformance suite (14 vectors, incl. SIGv1 bug) ──
+  # ── Gate 5: five implemented manifest byte/chain/time vectors ──
   conformance:
     needs: sign
     runs-on: ubuntu-latest
@@ -178,10 +178,9 @@ jobs:
             --vectors conformance/vectors/ \
             --receipt release/run-manifest.json \
             --require-all-pass
-          # Vectors: deletion, reorder, replay, cross-tenant, chain fork,
-          # signer substitution, alg confusion, DSSE PAE malleation (V11 bug),
-          # timestamp rollback, policy-bundle swap, model-digest swap,
-          # trace mismatch, quantization mismatch, fail-open
+          # V01 canonicalization; V02 exact PAE bytes; V03 DER parse;
+          # V04 predecessor linkage; V05 timestamp monotonicity.
+          # These vectors do not establish signer trust or production admission.
 
   # ── Final gate: publication_eligible === true, then publish ─────────────
   publish:

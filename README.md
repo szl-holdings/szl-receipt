@@ -275,6 +275,22 @@ Runnable end-to-end demo: [`examples/proof_carrying_inference.py`](examples/proo
 
 ## Development
 
+### Receipt verification benchmark
+
+The [conformance suite](conformance/README.md) now binds the release gate to the
+unchanged production DSSE encoder and fixed protocol byte vectors. An offline
+12-case SAMPLE benchmark compares exact-byte cryptography/OpenSSL signatures
+with the SZL receipt profile and separate artifact/source/signer fixture policy.
+It retains source hashes and verdicts; private fixture keys remain in memory.
+
+```bash
+python conformance/benchmark_verifiers.py --require-openssl --output verifier-benchmark.json
+```
+
+Run after installing the development dependencies below. Missing required
+OpenSSL comparison is UNAVAILABLE and nonzero. Local fixture admission does
+not establish external signer trust or production authorization.
+
 ```bash
 pip install -e ".[dev]"
 pytest -q

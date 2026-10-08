@@ -2,5 +2,5 @@
   "id": "V02",
   "name": "PAE byte-length encoding (V11 regression)",
   "expect": "pass",
-  "spec": "DSSE pre-auth encoding = LEN SP field SP ... with plain ASCII-decimal lengths. Re-parses the PAE built over canon(manifest): exactly 3 fields (context 'DSSEv1', payload type, canonical payload), canonical decimal prefixes, no trailing bytes. The V11 bug class — struct-packed binary u64 length prefixes producing a second valid-looking encoding — fails the integer decode or field walk."
+  "spec": "DSSE PAE = literal 'DSSEv1' SP LEN(type) SP type SP LEN(payload) SP payload. Release and production share the stdlib encoder. The official worked vector must match before parsing the current manifest: exactly two length-prefixed byte fields follow the literal prefix. Context-length prefixes, binary lengths, wrong fields and trailing bytes fail. This is byte conformance; signature and signer authorization require separate verification."
 }

@@ -36,3 +36,14 @@ jobs:
 
       - name: Run pytest
         run: pytest -q
+
+      - name: Strict receipt cross-verifier benchmark
+        run: python conformance/benchmark_verifiers.py --require-openssl --output verifier-benchmark.json
+
+      - name: Retain public SAMPLE verification receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: receipt-verifier-benchmark-${{ matrix.python-version }}
+          path: verifier-benchmark.json
+          if-no-files-found: error

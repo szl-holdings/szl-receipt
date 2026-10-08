@@ -6,9 +6,9 @@ Five implemented vectors (vector JSONs live in conformance/vectors/):
   V01 canonicalization  JSON canonical form is stable: canonicalize -> mutate
                         key order -> canonicalize -> identical bytes; and any
                         recorded `payload_sha256` recomputes over canon(payload).
-  V02 pae-byte-length   DSSE PAE = len(ctx)||ctx||len(type)||type||
-                        len(payload)||payload with 8-byte ASCII decimal length
-                        prefixes; verified against independently computed bytes.
+  V02 pae-byte-length   DSSE PAE = "DSSEv1" SP LEN(type) SP type SP
+                        LEN(payload) SP payload; ASCII decimal byte lengths,
+                        checked against the protocol worked vector.
   V03 der-parse         Any attached ECDSA signature parses as minimal-DER
                         SEQUENCE(INTEGER r, INTEGER s) with no trailing bytes.
   V04 prev-hash-linkage chain.prev_hash is 'genesis' or a 64-hex sha256; when a
@@ -25,6 +25,7 @@ receipt is missing/unreadable. Stdlib only.
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import json
 import pathlib
 import re
@@ -32,6 +33,13 @@ import sys
 
 DSSE_CONTEXT = "DSSEv1"
 PAYLOAD_TYPE = "application/vnd.szl.run-manifest+json"
+
+# Load the repository's stdlib-only encoder without initializing the package
+# (and its maintained crypto dependencies). Release and production use one PAE.
+_canonical_path = pathlib.Path(__file__).resolve().parents[1] / "src/szl_receipt/_canonical.py"
+_canonical_spec = importlib.util.spec_from_file_location("_szl_release_canonical", _canonical_path)
+_canonical = importlib.util.module_from_spec(_canonical_spec)
+_canonical_spec.loader.exec_module(_canonical)
 
 
 # ── primitives ────────────────────────────────────────────────────────────────
@@ -43,13 +51,10 @@ def canon(obj) -> bytes:
 
 
 def pae(context: str, payload_type: str, payload: bytes) -> bytes:
-    """DSSE pre-auth encoding: LEN SP field SP LEN SP field SP LEN SP field,
-    where LEN is the field byte length as plain ASCII decimal."""
-    c, t = context.encode(), payload_type.encode()
-    out = b""
-    for f in (c, t, payload):
-        out += str(len(f)).encode() + b" " + f + b" "
-    return out[:-1]  # no trailing space after the final field
+    """Compatibility wrapper around the production, spec-pinned DSSE encoder."""
+    if context != DSSE_CONTEXT:
+        raise ValueError("DSSE context must be the literal DSSEv1")
+    return _canonical.pae(payload_type, payload)
 
 
 def der_parse_ints(sig: bytes) -> tuple[int, int]:
@@ -110,15 +115,22 @@ def v01_canonicalization(manifest: dict, raw: bytes, **_):
 
 
 def v02_pae_byte_length(manifest: dict, raw: bytes, **_):
-    """Re-parse the PAE sequentially; every length prefix must be canonical
-    ASCII decimal and every counted field must match, byte for byte. Binary
-    (struct-packed) length prefixes — the V11 malleation class — fail the
-    int() decode or the field-length walk immediately."""
+    """Check the external fixed vector, then literal prefix and two byte fields.
+
+    The old length-prefixed context was self-consistent but nonstandard.
+    Neither that encoding nor binary length prefixes can qualify this gate.
+    """
+    reference = b"DSSEv1 29 http://example.com/HelloWorld 11 hello world"
+    if pae(DSSE_CONTEXT, "http://example.com/HelloWorld", b"hello world") != reference:
+        return False, "PAE differs from the DSSE protocol worked vector"
     payload = canon(manifest)
     p = pae(DSSE_CONTEXT, PAYLOAD_TYPE, payload)
-    fields, off = [], 0
+    prefix = b"DSSEv1 "
+    if not p.startswith(prefix):
+        return False, "PAE must start with the literal DSSEv1 prefix"
+    fields, off = [], len(prefix)
     try:
-        for _ in range(3):
+        for index in range(2):
             sp = p.index(b" ", off)
             n = int(p[off:sp])                      # raises on binary prefixes
             if str(n).encode() != p[off:sp]:
@@ -127,18 +139,20 @@ def v02_pae_byte_length(manifest: dict, raw: bytes, **_):
             fields.append(p[start:start + n])
             if len(fields[-1]) != n:
                 return False, "length prefix overruns the buffer"
-            off = start + n + 1                     # skip field + separator
-        if off - 1 != len(p):
+            off = start + n
+            if index == 0:
+                if p[off:off + 1] != b" ":
+                    return False, "missing separator after payload type"
+                off += 1
+        if off != len(p):
             return False, "trailing bytes after final PAE field"
     except (ValueError, IndexError) as e:
         return False, f"PAE structure unparseable (V11-class malleation): {e}"
-    if fields[0] != DSSE_CONTEXT.encode():
-        return False, f"context field {fields[0]!r} != {DSSE_CONTEXT!r}"
-    if fields[1] != PAYLOAD_TYPE.encode():
-        return False, f"payload-type field {fields[1]!r} != {PAYLOAD_TYPE!r}"
-    if fields[2] != payload:
+    if fields[0] != PAYLOAD_TYPE.encode():
+        return False, f"payload-type field {fields[0]!r} != {PAYLOAD_TYPE!r}"
+    if fields[1] != payload:
         return False, "payload field != canonical manifest bytes"
-    return True, f"PAE re-parse ok: 3 fields, {len(p)}B total, canonical decimal lengths"
+    return True, f"DSSE worked vector and re-parse ok: literal prefix, 2 fields, {len(p)}B total"
 
 
 def v03_der_parse(manifest: dict, **_):
