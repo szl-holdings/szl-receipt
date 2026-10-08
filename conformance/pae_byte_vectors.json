@@ -1,0 +1,35 @@
+{
+  "schema": "szl.pae-byte-vectors/v1",
+  "reference": "https://github.com/secure-systems-lab/dsse/blob/master/protocol.md",
+  "claim_boundary": "Fixed byte conformance fixtures; no signature, production authority or external replay.",
+  "vectors": [
+    {
+      "id": "official-worked-vector",
+      "fixture_class": "DECLARED",
+      "payload_type": "http://example.com/HelloWorld",
+      "payload_hex": "68656c6c6f20776f726c64",
+      "expected_pae_hex": "44535345763120323920687474703a2f2f6578616d706c652e636f6d2f48656c6c6f576f726c642031312068656c6c6f20776f726c64"
+    },
+    {
+      "id": "empty-payload",
+      "fixture_class": "SAMPLE",
+      "payload_type": "application/x-test",
+      "payload_hex": "",
+      "expected_pae_hex": "445353457631203138206170706c69636174696f6e2f782d74657374203020"
+    },
+    {
+      "id": "unicode-type-and-payload",
+      "fixture_class": "SAMPLE",
+      "payload_type": "text/é",
+      "payload_hex": "cf80",
+      "expected_pae_hex": "445353457631203720746578742fc3a9203220cf80"
+    },
+    {
+      "id": "binary-payload",
+      "fixture_class": "SAMPLE",
+      "payload_type": "application/x-test",
+      "payload_hex": "00ff200d0a",
+      "expected_pae_hex": "445353457631203138206170706c69636174696f6e2f782d7465737420352000ff200d0a"
+    }
+  ]
+}

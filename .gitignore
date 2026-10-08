@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Explicit local cross-verifier output is evidence, not source or a release.
+verifier-benchmark.json
