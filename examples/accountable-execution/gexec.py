@@ -1,0 +1,537 @@
+"""Accountable AI execution — a durable, idempotent governed executor.
+
+Threat model and guarantee: see README.md. In one sentence: an agent proposes an
+action, a trusted policy signs a grant bound to the EXACT request, an executor
+independently re-checks that authority, performs the effect against a SEPARATE
+durable external world under an idempotency key, and an independent verifier
+reconciles signed receipts against the actual external state. No charge, no
+network — two local SQLite stores model the governance ledger and the external
+world as distinct durable systems (you cannot two-phase-commit with a real
+external API, so this uses the real pattern: durable intent -> idempotent
+external call -> reconcile by readback).
+
+Python stdlib + `cryptography` only.
+"""
+from __future__ import annotations
+
+import json
+import hashlib
+import sqlite3
+import time
+from dataclasses import dataclass, asdict
+from typing import Optional
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.exceptions import InvalidSignature
+
+
+# ---------------------------------------------------------------- canonical + crypto
+def canon(obj) -> bytes:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
+def sha256_hex(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def action_digest(action: dict) -> str:
+    return sha256_hex(canon(action))
+
+
+def dsse_pae(payload_type: str, payload: bytes) -> bytes:
+    t = payload_type.encode()
+    return b" ".join([b"DSSEv1", str(len(t)).encode(), t, str(len(payload)).encode(), payload])
+
+
+def key_id(pub: Ed25519PublicKey) -> str:
+    raw = pub.public_bytes_raw()
+    return sha256_hex(raw)[:16]
+
+
+ENVELOPE_TYPE = "application/vnd.szl.gexec.receipt+json"
+GRANT_TYPE = "application/vnd.szl.gexec.grant+json"
+
+
+def sign_envelope(payload: dict, priv: Ed25519PrivateKey, payload_type: str) -> dict:
+    body = canon(payload)
+    sig = priv.sign(dsse_pae(payload_type, body))
+    return {
+        "payloadType": payload_type,
+        "payload": body.decode(),
+        "signatures": [{"keyid": key_id(priv.public_key()), "sig": sig.hex()}],
+    }
+
+
+def verify_envelope(env: dict, trusted_pub: Ed25519PublicKey, payload_type: str) -> Optional[dict]:
+    """Return the payload dict iff the envelope is well-formed and the signature
+    verifies over the canonical bytes under the trusted key; else None."""
+    try:
+        if env.get("payloadType") != payload_type:
+            return None
+        body = env["payload"].encode()
+        if json.loads(body) is None:
+            return None
+        # bind the signed bytes to the canonical form (no body-swap under a valid sig)
+        if canon(json.loads(body)) != body:
+            return None
+        sig_entry = env["signatures"][0]
+        if sig_entry.get("keyid") != key_id(trusted_pub):
+            return None
+        trusted_pub.verify(bytes.fromhex(sig_entry["sig"]), dsse_pae(payload_type, body))
+        return json.loads(body)
+    except (InvalidSignature, KeyError, ValueError, IndexError, TypeError):
+        return None
+
+
+# ---------------------------------------------------------------- grant
+@dataclass(frozen=True)
+class Grant:
+    proposal_id: str
+    action_digest: str
+    target: str
+    policy_revision: str
+    allowance_id: str
+    attempt_id: str      # single-use authorized attempt; also the idempotency key
+    nonce: str
+    issued_at: float
+    expires_at: float
+
+    def body(self) -> dict:
+        return asdict(self)
+
+
+class Authorizer:
+    """Trusted policy. Signs a grant bound to the exact action."""
+
+    def __init__(self, priv: Ed25519PrivateKey, policy_revision: str):
+        self._priv = priv
+        self.policy_revision = policy_revision
+
+    @property
+    def pub(self) -> Ed25519PublicKey:
+        return self._priv.public_key()
+
+    def issue(self, *, proposal_id, action: dict, target, allowance_id, attempt_id,
+              nonce, ttl_s: float = 30.0, now: Optional[float] = None) -> dict:
+        now = time.time() if now is None else now
+        g = Grant(
+            proposal_id=proposal_id,
+            action_digest=action_digest(action),
+            target=target,
+            policy_revision=self.policy_revision,
+            allowance_id=allowance_id,
+            attempt_id=attempt_id,
+            nonce=nonce,
+            issued_at=now,
+            expires_at=now + ttl_s,
+        )
+        return sign_envelope(g.body(), self._priv, GRANT_TYPE)
+
+
+@dataclass
+class Check:
+    ok: bool
+    reason: str = "ok"
+
+
+def verify_grant(grant_env: dict, authorizer_pub: Ed25519PublicKey, action: dict,
+                 now: Optional[float] = None) -> Check:
+    """Independent authority check performed by the executor itself."""
+    now = time.time() if now is None else now
+    payload = verify_envelope(grant_env, authorizer_pub, GRANT_TYPE)
+    if payload is None:
+        return Check(False, "grant-signature-invalid")
+    g = Grant(**payload)
+    if now > g.expires_at:
+        return Check(False, "grant-expired")
+    # bind to the EXACT action being executed — catches a swapped/altered request
+    if action_digest(action) != g.action_digest:
+        return Check(False, "action-digest-mismatch")
+    return Check(True)
+
+
+# ---------------------------------------------------------------- durable stores
+class ExternalWorld:
+    """A SEPARATE durable system that performs effects at-most-once per idempotency
+    key (models a real external API's own idempotency, e.g. a payment key)."""
+
+    def __init__(self, path: str):
+        self.path = path
+        c = sqlite3.connect(path, timeout=30)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=FULL")
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS effects("
+            "idempotency_key TEXT PRIMARY KEY, attempt_id TEXT, target TEXT, "
+            "payload_sha256 TEXT, effect_id TEXT UNIQUE, created_at REAL)"
+        )
+        c.commit()
+        c.close()
+
+    def _conn(self):
+        c = sqlite3.connect(self.path, timeout=30)
+        c.execute("PRAGMA synchronous=FULL")
+        c.row_factory = sqlite3.Row
+        return c
+
+    def apply(self, idempotency_key: str, attempt_id: str, target: str,
+              payload: bytes) -> tuple[bool, str]:
+        """Perform the external effect. Returns (created, effect_id). A duplicate
+        idempotency key performs NO second effect and returns the existing id."""
+        effect_id = sha256_hex(b"effect:" + idempotency_key.encode())[:16]
+        c = self._conn()
+        try:
+            c.execute(
+                "INSERT INTO effects VALUES(?,?,?,?,?,?)",
+                (idempotency_key, attempt_id, target, sha256_hex(payload), effect_id, time.time()),
+            )
+            c.commit()
+            return True, effect_id
+        except sqlite3.IntegrityError:
+            row = c.execute(
+                "SELECT effect_id FROM effects WHERE idempotency_key=?", (idempotency_key,)
+            ).fetchone()
+            return False, (row["effect_id"] if row else effect_id)
+        finally:
+            c.close()
+
+    def get(self, idempotency_key: str) -> Optional[dict]:
+        c = self._conn()
+        try:
+            row = c.execute(
+                "SELECT * FROM effects WHERE idempotency_key=?", (idempotency_key,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            c.close()
+
+    def count(self, attempt_id: Optional[str] = None) -> int:
+        c = self._conn()
+        try:
+            if attempt_id is None:
+                return c.execute("SELECT COUNT(*) FROM effects").fetchone()[0]
+            return c.execute(
+                "SELECT COUNT(*) FROM effects WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()[0]
+        finally:
+            c.close()
+
+    def all(self) -> list[dict]:
+        c = self._conn()
+        try:
+            return [dict(r) for r in c.execute("SELECT * FROM effects").fetchall()]
+        finally:
+            c.close()
+
+
+# authority state machine
+AVAILABLE = "AVAILABLE"
+CLAIMED = "CLAIMED"
+DISPATCH_AUTHORIZED = "DISPATCH_AUTHORIZED"
+CLOSED = "CLOSED"
+# terminal reconciliation verdicts
+COMMITTED = "COMMITTED"
+KNOWN_NOT_DISPATCHED = "KNOWN_NOT_DISPATCHED"
+
+
+class AuthorityLedger:
+    """Durable governance ledger. Atomic single-use claim + append-only receipts."""
+
+    def __init__(self, path: str):
+        self.path = path
+        c = sqlite3.connect(path, timeout=30)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=FULL")
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS authority("
+            "attempt_id TEXT PRIMARY KEY, allowance_id TEXT, action_digest TEXT, "
+            "target TEXT, state TEXT, verdict TEXT, grant_env TEXT, "
+            "created_at REAL, claimed_at REAL, dispatched_at REAL, closed_at REAL)"
+        )
+        c.execute("CREATE TABLE IF NOT EXISTS seen_nonce(nonce TEXT PRIMARY KEY, attempt_id TEXT)")
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS receipts("
+            "attempt_id TEXT PRIMARY KEY, envelope TEXT, created_at REAL)"
+        )
+        c.commit()
+        c.close()
+
+    def _conn(self):
+        c = sqlite3.connect(self.path, timeout=30)
+        c.execute("PRAGMA synchronous=FULL")
+        c.row_factory = sqlite3.Row
+        return c
+
+    def register(self, grant_env: dict):
+        g = json.loads(grant_env["payload"])
+        c = self._conn()
+        try:
+            c.execute(
+                "INSERT OR IGNORE INTO authority(attempt_id, allowance_id, action_digest, "
+                "target, state, grant_env, created_at) VALUES(?,?,?,?,?,?,?)",
+                (g["attempt_id"], g["allowance_id"], g["action_digest"], g["target"],
+                 AVAILABLE, json.dumps(grant_env), time.time()),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+    def consume_nonce(self, nonce: str, attempt_id: str) -> bool:
+        """At-most-once nonce. Returns False if already seen (replay)."""
+        c = self._conn()
+        try:
+            c.execute("INSERT INTO seen_nonce VALUES(?,?)", (nonce, attempt_id))
+            c.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            c.close()
+
+    def claim(self, attempt_id: str) -> bool:
+        """Atomic compare-and-swap AVAILABLE -> CLAIMED. Exactly one winner under
+        concurrency (single atomic UPDATE; SQLite serializes writers)."""
+        c = self._conn()
+        try:
+            cur = c.execute(
+                "UPDATE authority SET state=?, claimed_at=? WHERE attempt_id=? AND state=?",
+                (CLAIMED, time.time(), attempt_id, AVAILABLE),
+            )
+            c.commit()
+            return cur.rowcount == 1
+        finally:
+            c.close()
+
+    def mark_dispatch_authorized(self, attempt_id: str):
+        c = self._conn()
+        try:
+            c.execute(
+                "UPDATE authority SET state=?, dispatched_at=? WHERE attempt_id=? AND state=?",
+                (DISPATCH_AUTHORIZED, time.time(), attempt_id, CLAIMED),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+    def finalize(self, attempt_id: str, state: str, verdict: str):
+        c = self._conn()
+        try:
+            c.execute(
+                "UPDATE authority SET state=?, verdict=?, closed_at=? WHERE attempt_id=?",
+                (state, verdict, time.time(), attempt_id),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+    def record_receipt(self, attempt_id: str, env: dict):
+        c = self._conn()
+        try:
+            c.execute(
+                "INSERT OR IGNORE INTO receipts VALUES(?,?,?)",
+                (attempt_id, json.dumps(env), time.time()),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+    def row(self, attempt_id: str) -> Optional[dict]:
+        c = self._conn()
+        try:
+            r = c.execute("SELECT * FROM authority WHERE attempt_id=?", (attempt_id,)).fetchone()
+            return dict(r) if r else None
+        finally:
+            c.close()
+
+    def in_states(self, states: list[str]) -> list[dict]:
+        q = "SELECT * FROM authority WHERE state IN (%s)" % ",".join("?" * len(states))
+        c = self._conn()
+        try:
+            return [dict(r) for r in c.execute(q, states).fetchall()]
+        finally:
+            c.close()
+
+    def all_authority(self) -> list[dict]:
+        c = self._conn()
+        try:
+            return [dict(r) for r in c.execute("SELECT * FROM authority").fetchall()]
+        finally:
+            c.close()
+
+    def all_receipts(self) -> list[dict]:
+        c = self._conn()
+        try:
+            return [dict(r) for r in c.execute("SELECT * FROM receipts").fetchall()]
+        finally:
+            c.close()
+
+
+# ---------------------------------------------------------------- executor
+class CrashInjected(BaseException):
+    """Raised to simulate a hard crash at an injection point (see crash_worker)."""
+
+
+@dataclass
+class Outcome:
+    status: str          # COMMITTED | REJECTED | KNOWN_NOT_DISPATCHED
+    reason: str = ""
+    effect_id: str = ""
+    created_effect: bool = False
+
+
+class GovernedExecutor:
+    def __init__(self, ledger: AuthorityLedger, world: ExternalWorld,
+                 authorizer_pub: Ed25519PublicKey, exec_priv: Ed25519PrivateKey):
+        self.ledger = ledger
+        self.world = world
+        self.authorizer_pub = authorizer_pub
+        self.exec_priv = exec_priv
+
+    def _receipt(self, grant: dict, effect_id: str, verdict: str) -> dict:
+        payload = {
+            "attempt_id": grant["attempt_id"],
+            "action_digest": grant["action_digest"],
+            "target": grant["target"],
+            "allowance_id": grant["allowance_id"],
+            "policy_revision": grant["policy_revision"],
+            "effect_id": effect_id,
+            "verdict": verdict,
+            "observed_at": time.time(),
+        }
+        return sign_envelope(payload, self.exec_priv, ENVELOPE_TYPE)
+
+    def execute(self, action: dict, grant_env: dict, *, now: Optional[float] = None,
+                crash_hook=None) -> Outcome:
+        def crash(point):
+            if crash_hook:
+                crash_hook(point)
+
+        # 1. INDEPENDENT authority check (signature, expiry, exact action binding)
+        chk = verify_grant(grant_env, self.authorizer_pub, action, now=now)
+        if not chk.ok:
+            return Outcome("REJECTED", chk.reason)          # zero effect
+        grant = json.loads(grant_env["payload"])
+        aid = grant["attempt_id"]
+
+        # 2. replay guard: single-use nonce (durable)
+        if not self.ledger.consume_nonce(grant["nonce"], aid):
+            return Outcome("REJECTED", "replay-nonce")        # zero new effect
+
+        # 3. atomic single-use claim (durable CAS). Losers never dispatch.
+        if not self.ledger.claim(aid):
+            return Outcome("REJECTED", "not-available-or-already-claimed")
+        crash("after_claim")
+
+        # 4. durably record intent-to-dispatch BEFORE touching the external world,
+        #    so a crash here is resolvable by readback (never a silent success).
+        self.ledger.mark_dispatch_authorized(aid)
+        crash("after_dispatch_authorized")
+
+        # 5. idempotent external effect (at-most-once by key)
+        created, effect_id = self.world.apply(
+            idempotency_key=aid, attempt_id=aid, target=grant["target"], payload=canon(action)
+        )
+        crash("after_effect_before_receipt")
+
+        # 6. bind a signed receipt to the REAL effect, then close
+        env = self._receipt(grant, effect_id, COMMITTED)
+        self.ledger.record_receipt(aid, env)
+        self.ledger.finalize(aid, CLOSED, COMMITTED)
+        return Outcome("COMMITTED", "ok", effect_id, created)
+
+    def recover(self) -> list[tuple[str, str]]:
+        """Resolve attempts interrupted by a crash, by reading the EXTERNAL world —
+        never by guessing. CLAIMED/DISPATCH_AUTHORIZED with no effect ->
+        KNOWN_NOT_DISPATCHED (consumption retained, NO resend). With an effect ->
+        COMMITTED (bind the receipt to the real effect). An uncertain state never
+        becomes a success claim without a confirmed external effect."""
+        resolved = []
+        for row in self.ledger.in_states([CLAIMED, DISPATCH_AUTHORIZED]):
+            aid = row["attempt_id"]
+            effect = self.world.get(aid)
+            if effect is None:
+                self.ledger.finalize(aid, CLOSED, KNOWN_NOT_DISPATCHED)
+                resolved.append((aid, KNOWN_NOT_DISPATCHED))
+            else:
+                grant = json.loads(json.loads(row["grant_env"])["payload"])
+                env = self._receipt(grant, effect["effect_id"], COMMITTED)
+                self.ledger.record_receipt(aid, env)
+                self.ledger.finalize(aid, CLOSED, COMMITTED)
+                resolved.append((aid, COMMITTED))
+        return resolved
+
+
+# ---------------------------------------------------------------- independent verifier
+@dataclass
+class Invariant:
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+def independent_verify(ledger: AuthorityLedger, world: ExternalWorld,
+                       authorizer_pub: Ed25519PublicKey,
+                       exec_pub: Ed25519PublicKey) -> list[Invariant]:
+    """Zero-trust reconciliation: read the external world + the signed receipts +
+    the authority ledger and check they agree. Does not trust the executor."""
+    inv: list[Invariant] = []
+    effects = {e["attempt_id"]: e for e in world.all()}
+    effects_list = world.all()
+    authority = {a["attempt_id"]: a for a in ledger.all_authority()}
+    receipts = {r["attempt_id"]: json.loads(r["envelope"]) for r in ledger.all_receipts()}
+
+    # I1: at most one external effect per attempt (unique key); counts reconcile
+    per_attempt_ok = len(effects_list) == len(effects)
+    inv.append(Invariant("at_most_one_effect_per_attempt", per_attempt_ok,
+                         f"{len(effects_list)} effects / {len(effects)} distinct attempts"))
+
+    # I2: every effect traces to an authorized attempt that actually reached dispatch
+    bad = [e["attempt_id"] for e in effects_list
+           if e["attempt_id"] not in authority
+           or authority[e["attempt_id"]]["state"] not in (DISPATCH_AUTHORIZED, CLOSED)
+           or authority[e["attempt_id"]]["verdict"] not in (None, COMMITTED)]
+    # verdict None allowed only if still mid-flight; here all should be COMMITTED
+    bad = [e["attempt_id"] for e in effects_list
+           if e["attempt_id"] not in authority
+           or authority[e["attempt_id"]].get("verdict") != COMMITTED]
+    inv.append(Invariant("no_effect_without_committed_authority", not bad,
+                         f"unauthorized effects: {bad}"))
+
+    # I3: no effect exists for a rejected / never-claimed / KNOWN_NOT_DISPATCHED attempt
+    leaked = []
+    for aid, a in authority.items():
+        if a.get("verdict") == KNOWN_NOT_DISPATCHED and aid in effects:
+            leaked.append(aid)
+    inv.append(Invariant("no_effect_for_not_dispatched", not leaked,
+                         f"leaked effects: {leaked}"))
+
+    # I4: every receipt signature verifies, binds to a REAL external effect, and its
+    #     action_digest matches the authority row (no success claim without evidence)
+    bad_receipts = []
+    for aid, env in receipts.items():
+        payload = verify_envelope(env, exec_pub, ENVELOPE_TYPE)
+        if payload is None:
+            bad_receipts.append((aid, "signature"))
+            continue
+        if payload.get("verdict") == COMMITTED:
+            e = effects.get(aid)
+            if e is None or e["effect_id"] != payload.get("effect_id"):
+                bad_receipts.append((aid, "receipt-without-real-effect"))
+            elif aid in authority and payload.get("action_digest") != authority[aid]["action_digest"]:
+                bad_receipts.append((aid, "action-digest-mismatch"))
+    inv.append(Invariant("every_committed_receipt_backed_by_effect", not bad_receipts,
+                         f"bad receipts: {bad_receipts}"))
+
+    # I5: every stored grant signature verifies under the authorizer key
+    bad_grants = []
+    for aid, a in authority.items():
+        env = json.loads(a["grant_env"])
+        if verify_envelope(env, authorizer_pub, GRANT_TYPE) is None:
+            bad_grants.append(aid)
+    inv.append(Invariant("all_grants_authorizer_signed", not bad_grants,
+                         f"bad grants: {bad_grants}"))
+
+    return inv

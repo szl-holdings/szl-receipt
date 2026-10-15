@@ -1,0 +1,78 @@
+# Accountable-execution reference suite — reproducible results
+# python 3.13.16 · cryptography 50.0.1 · Linux
+
+## python3 prove.py
+
+========================================================================
+ACCOUNTABLE AI EXECUTION — reference implementation · test suite
+Tested under the explicit assumptions in README.md (threat model).
+========================================================================
+
+Property 1 — wrong-digest / expired / replayed grants cause ZERO new effects
+  [PASS] wrong-digest rejected  — action-digest-mismatch
+  [PASS] wrong-digest produced 0 effects
+  [PASS] expired rejected  — grant-expired
+  [PASS] expired produced 0 effects
+  [PASS] first use commits
+  [PASS] replayed use rejected  — replay-nonce
+  [PASS] replay produced no SECOND effect (exactly 1 total)
+
+Property 2 — concurrent attempts produce AT MOST ONE effect
+  [PASS] 24 concurrent attempts -> exactly 1 commit  — commits=1
+  [PASS] exactly 1 external effect  — effects=1
+  [PASS] external idempotency layer: exactly 1 effect under N writers  — created=1 effects=1
+
+Property 3 — crash before/after dispatch never silently becomes success
+  [PASS] [after_claim] worker hard-crashed  — rc=42
+  [PASS] [after_claim] no success receipt before recovery
+  [PASS] [after_claim] effect count = 0  — effects=0
+  [PASS] [after_claim] recovery verdict = KNOWN_NOT_DISPATCHED  — verdict=KNOWN_NOT_DISPATCHED
+  [PASS] [after_claim] no success claim without a real effect
+  [PASS] [after_claim] re-running recovery creates no extra effect
+  [PASS] [after_dispatch_authorized] worker hard-crashed  — rc=42
+  [PASS] [after_dispatch_authorized] no success receipt before recovery
+  [PASS] [after_dispatch_authorized] effect count = 0  — effects=0
+  [PASS] [after_dispatch_authorized] recovery verdict = KNOWN_NOT_DISPATCHED  — verdict=KNOWN_NOT_DISPATCHED
+  [PASS] [after_dispatch_authorized] no success claim without a real effect
+  [PASS] [after_dispatch_authorized] re-running recovery creates no extra effect
+  [PASS] [after_effect_before_receipt] worker hard-crashed  — rc=42
+  [PASS] [after_effect_before_receipt] no success receipt before recovery
+  [PASS] [after_effect_before_receipt] effect count = 1  — effects=1
+  [PASS] [after_effect_before_receipt] recovery verdict = COMMITTED  — verdict=COMMITTED
+  [PASS] [after_effect_before_receipt] no success claim without a real effect
+  [PASS] [after_effect_before_receipt] re-running recovery creates no extra effect
+
+Property 4 — an independent verifier reconciles receipts with external state
+  [PASS] invariant: at_most_one_effect_per_attempt  — 5 effects / 5 distinct attempts
+  [PASS] invariant: no_effect_without_committed_authority  — unauthorized effects: []
+  [PASS] invariant: no_effect_for_not_dispatched  — leaked effects: []
+  [PASS] invariant: every_committed_receipt_backed_by_effect  — bad receipts: []
+  [PASS] invariant: all_grants_authorizer_signed  — bad grants: []
+  [PASS] detects a forged effect with no authority
+  [PASS] detects a tampered receipt (signature breaks)
+
+========================================================================
+35/35 checks passed in 0.56s
+ALL CHECKS PASSED — properties hold in this reference implementation,
+under the explicit assumptions in README.md. Not a claim about any
+deployed system; see 'What this does and does not establish'.
+========================================================================
+(exit 0)
+
+## python3 -m unittest test_negative -v
+
+test_expired_grant_is_rejected_with_zero_effects (test_negative.TestAuthorityExactAndSingleUse.test_expired_grant_is_rejected_with_zero_effects) ... ok
+test_forged_grant_signature_is_rejected (test_negative.TestAuthorityExactAndSingleUse.test_forged_grant_signature_is_rejected) ... ok
+test_replay_produces_no_second_effect (test_negative.TestAuthorityExactAndSingleUse.test_replay_produces_no_second_effect) ... ok
+test_wrong_digest_is_rejected_with_zero_effects (test_negative.TestAuthorityExactAndSingleUse.test_wrong_digest_is_rejected_with_zero_effects) ... ok
+test_concurrent_attempts_produce_at_most_one_effect (test_negative.TestConcurrency.test_concurrent_attempts_produce_at_most_one_effect) ... ok
+test_crash_after_effect_commits_exactly_once (test_negative.TestCrashNeverFakesSuccess.test_crash_after_effect_commits_exactly_once) ... ok
+test_crash_before_effect_is_not_committed (test_negative.TestCrashNeverFakesSuccess.test_crash_before_effect_is_not_committed) ... ok
+test_forged_effect_without_authority_is_detected (test_negative.TestIndependentVerifierDetectsTampering.test_forged_effect_without_authority_is_detected) ... ok
+test_tampered_receipt_is_detected (test_negative.TestIndependentVerifierDetectsTampering.test_tampered_receipt_is_detected) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.310s
+
+OK
+(exit 0)
