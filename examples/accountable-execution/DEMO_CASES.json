@@ -45,6 +45,13 @@
       "evidence": "grant-signature-invalid; effects=0"
     },
     {
+      "id": "A7",
+      "category": "authority",
+      "description": "action mutated after validation -> snapshot dispatched, not the mutation",
+      "label": "PASS",
+      "evidence": "status=COMMITTED effect==authorized=True mutated=True"
+    },
+    {
       "id": "B1",
       "category": "at-most-once",
       "description": "N concurrent identical requests -> exactly 1 effect; losers truthful",
@@ -57,6 +64,13 @@
       "description": "different payloads, same idempotency key -> exactly 1 effect",
       "label": "PASS",
       "evidence": "created=(True,False) effects=1"
+    },
+    {
+      "id": "B3",
+      "category": "at-most-once",
+      "description": "existing key, different target/payload -> not COMMITTED (conflict)",
+      "label": "PASS",
+      "evidence": "status=REJECTED reason=idempotency-key-conflict verdict=EFFECT_CONFLICT"
     },
     {
       "id": "C1",
@@ -85,6 +99,13 @@
       "description": "hard crash @ after_close_before_return -> never a false success; resolved by external readback",
       "label": "PASS",
       "evidence": "crashed=True closed=CLOSED effects=1 receipts(pre)=1"
+    },
+    {
+      "id": "C5",
+      "category": "crash",
+      "description": "crash after atomic nonce+claim -> CLAIMED & recoverable, never stranded AVAILABLE",
+      "label": "PASS",
+      "evidence": "crashed=True state=CLAIMED no_stranded=True verdict=KNOWN_NOT_DISPATCHED"
     },
     {
       "id": "D1",
@@ -120,6 +141,13 @@
       "description": "executor claims COMMITTED but no external effect -> verifier detects",
       "label": "PASS",
       "evidence": "verifier rejected a committed receipt with no backing effect"
+    },
+    {
+      "id": "E4",
+      "category": "tamper",
+      "description": "external effect content altered after commit -> verifier detects",
+      "label": "PASS",
+      "evidence": "verifier flagged effect-content mismatch"
     },
     {
       "id": "F1",

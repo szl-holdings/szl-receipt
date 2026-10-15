@@ -32,7 +32,7 @@ for this PR and appears nowhere below as achieved.
 | 2 | One review card per asset | `SOURCE_REVIEWED` (partial, elsewhere) | Key assets reviewed at pinned heads in-session; a full per-asset card set is not part of this PR. |
 | 3 | Consolidated resume / supersession | `SOURCE_REVIEWED` (partial, elsewhere) | Surviving lanes and holds tracked in-session; not re-asserted here. |
 | 4 | Minimal reviewed diff + threat model + state machine + external-effect assumptions | `TESTS_REPRODUCED` | `gexec.py` (the chain), `README.md` (threat model, state machine, two-store boundary). A reference implementation in a new example dir — **not** a patch into the served runtime. |
-| 5 | Reproducible local demo + separate verifier, durable state, adversarial, concurrency, crash injection | `TESTS_REPRODUCED` | `prove.py` (35 checks), `test_negative.py` (9 unittests), `acceptance_matrix.py` (18 rows), `independent_verify()` as the separate verifier. Durable SQLite stores; real subprocess hard-crashes; N-thread races. |
+| 5 | Reproducible local demo + separate verifier, durable state, adversarial, concurrency, crash injection | `TESTS_REPRODUCED` | `prove.py` (40 checks), `test_negative.py` (13 unittests), `acceptance_matrix.py` (22 rows), `independent_verify()` as the separate verifier. Durable SQLite stores; real subprocess hard-crashes; N-thread races. Round-3 review findings (action snapshot, effect-identity reconciliation, atomic nonce+claim) fixed and regression-covered. |
 | 6 | Honest demonstration narrative + evidence package (claim → source → test → observation → limitation) | `TESTS_REPRODUCED` | This report + `README.md` + `RESULTS.txt`. No fabricated pass, signature, or live label; the chain is shown below. |
 | 7 | Prior-work comparison + preregistered cost/reliability plan | comparison `SOURCE_REVIEWED`; cost eval `NOT_RUN` (pre-registered) | `MEASUREMENT_PLAN.md`. The comparison cites named prior art; the cost/reliability numbers are **registered before** any run, not reported. |
 | 8 | Smallest remaining approval requests | enumerated below | Each names action, target, cost and stopping condition. None bundled. |
@@ -51,12 +51,12 @@ reproduces the behaviour.
 | `deny-replayed` | A5 | **COVERED** — second use denied, exactly 1 effect. Replay *after durable restart* is shown by the crash rows (C), not A5 itself. |
 | `deny-bindings` | A3 (missing authority), A4 (wrong tenant), A6 (forged sig) | **COVERED** for these bindings; actor/policy-id and malformed-envelope bindings **NOT_RUN**. |
 | `concurrent` | B1 | **COVERED** — 24 racers → exactly 1 effect, losers truthful. |
-| `key-body-conflict` | B2 | **COVERED** — same key, different body → no second effect. |
+| `key-body-conflict` | B2, **B3** | **COVERED** — same key, different body → no second effect; existing key with a different target/payload → `EFFECT_CONFLICT`, never `COMMITTED` (reconciled in execute, recover, and verify). |
 | `dedup-expiry` | — | **NOT_RUN** — provider dedup-retention expiry before retry is not modelled. |
-| `crash-matrix` | C1–C4, D2 | **PARTIAL** — 4 crash points + "provider commits before response" (D2). "During dispatch" and "response-before-local-commit" as distinct points are **NOT_RUN**. |
+| `crash-matrix` | C1–C5, D2 | **PARTIAL** — 5 crash points (incl. the atomic nonce+claim boundary, C5) + "provider commits before response" (D2). "During dispatch" and "response-before-local-commit" as distinct points are **NOT_RUN**. |
 | `cancel-revoke-timeout` | D1 (provider timeout) | **PARTIAL** — timeout→UNKNOWN (never read as zero effects) is shown; explicit cancel/revoke and clock-skew races are **NOT_RUN**. |
-| `lying-executor` | E3 | **COVERED** — signed COMMITTED with no effect is detected. "Claims one while provider has two" is **NOT_RUN**. |
-| `tamper-evidence` | E1 (forged effect), E2 (tampered receipt) | **COVERED** for effect + receipt; policy/source-binding tamper **NOT_RUN**. |
+| `lying-executor` | E3 | **COVERED** — signed COMMITTED with no effect is detected. "Claims one while provider has two" as a distinct over-effect scenario is **NOT_RUN**. |
+| `tamper-evidence` | E1 (forged effect), E2 (tampered receipt), **E4** (effect content altered) | **COVERED** for effect, receipt, and post-commit effect-content tamper; policy/source-binding tamper **NOT_RUN**. |
 | `positive-local` | F1 | **COVERED** — `TESTS_REPRODUCED, LOCAL_SIMULATED`: exactly 1 effect, verifier clean. |
 | `positive-deployed` | — | **BLOCKED** — needs an approved real-provider operation; not my action. |
 
@@ -76,12 +76,12 @@ bindings; and all of `positive-deployed`. Zero observed failures in the covered 
   two-store ordering). The production boundary it models is a11oy's policy runtime,
   `IMPLEMENTED NOT DEPLOYED` — committed report read (`TESTS_REPORTED`), not rerun, and
   not wired to the served path.
-- **Test.** `python3 prove.py` (35), `python3 -m unittest test_negative -v` (9),
-  `python3 acceptance_matrix.py` (18). Durable stores, real subprocess crashes, thread
+- **Test.** `python3 prove.py` (40), `python3 -m unittest test_negative -v` (13),
+  `python3 acceptance_matrix.py` (22). Durable stores, real subprocess crashes, thread
   races.
 - **Observation.** `RESULTS.txt` — exact commands and raw output, no secrets. Counts are
-  reported per suite and **never summed** across suites (35, 9, and 18 are distinct
-  experiments, not a "62").
+  reported per suite and **never summed** across suites (40, 13, and 22 are distinct
+  experiments, not a "75").
 - **Limitation.** SQLite stands in for both the durable store and the external service's
   idempotency. Real networks, real partial failure, real clock skew, and a real API's
   idempotency semantics are out of scope. Change the threat model and every claim must be

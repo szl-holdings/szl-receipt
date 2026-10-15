@@ -107,6 +107,19 @@ def cat_A():
     record("A6", "authority", "forged grant signature -> deny, 0 effects",
            o.status == "REJECTED" and o.reason == "grant-signature-invalid" and world.count(att) == 0,
            f"{o.reason}; effects={world.count(att)}")
+
+    # A7: snapshot — mutating the caller's action AFTER the authority check must not
+    #     change the authorized or dispatched bytes (time-of-check/time-of-use closed).
+    g7, att7 = grant(auth, led, action)
+    live = dict(action)
+    o = ex.execute(live, g7, crash_hook=lambda p: (
+        live.__setitem__("amount", 9999) if p == "after_dispatch_authorized" else None))
+    eff = world.get(att7)
+    authorized = json.loads(g7["payload"])["action_digest"]
+    snap_ok = (o.status == "COMMITTED" and eff is not None
+               and eff["payload_sha256"] == authorized and live["amount"] == 9999)
+    record("A7", "authority", "action mutated after validation -> snapshot dispatched, not the mutation",
+           snap_ok, f"status={o.status} effect==authorized={eff is not None and eff['payload_sha256']==authorized} mutated={live['amount']==9999}")
     shutil.rmtree(d, ignore_errors=True)
 
 
@@ -138,8 +151,21 @@ def cat_B():
     record("B2", "at-most-once", "different payloads, same idempotency key -> exactly 1 effect",
            c1 is True and c2 is False and world2.count() == 1,
            f"created=({c1},{c2}) effects={world2.count()}")
+
+    # B3: an effect already present under this key with a DIFFERENT target/payload must
+    #     NEVER be reported COMMITTED — effect-identity reconciliation against the grant.
+    d3, ap3, ep3, auth3, led3, world3, ex3 = env()
+    actx = {"op": "charge", "amount": 250, "to": "acct-7"}
+    g3, att3 = grant(auth3, led3, actx, attempt="att-conflict")
+    world3.apply("att-conflict", "att-conflict", "svc://evil", gexec.canon({"op": "steal"}))  # foreign pre-effect
+    o3 = ex3.execute(actx, g3)
+    v3 = gexec.AuthorityLedger(led3.path).row("att-conflict")["verdict"]
+    record("B3", "at-most-once", "existing key, different target/payload -> not COMMITTED (conflict)",
+           o3.status == "REJECTED" and o3.reason == "idempotency-key-conflict" and v3 == gexec.EFFECT_CONFLICT,
+           f"status={o3.status} reason={o3.reason} verdict={v3}")
     shutil.rmtree(d, ignore_errors=True)
     shutil.rmtree(d2, ignore_errors=True)
+    shutil.rmtree(d3, ignore_errors=True)
 
 
 # ----------------------------------------------------------------- C: crashes
@@ -181,6 +207,26 @@ def cat_C():
         desc = f"hard crash @ {point} -> never a false success; resolved by external readback"
         record(cid, "crash", desc, ok, ev)
         shutil.rmtree(d, ignore_errors=True)
+
+    # C5: atomic nonce+claim. A hard crash right after the combined claim leaves a
+    #     CLAIMED, recoverable attempt — NEVER an AVAILABLE attempt with a burned
+    #     nonce (the stranded-forever state dot reported is now unreachable).
+    d = tempfile.mkdtemp(prefix="gexec_m_", dir=HERE)
+    lp, wp = os.path.join(d, "authority.db"), os.path.join(d, "world.db")
+    led = gexec.AuthorityLedger(lp); gexec.ExternalWorld(wp)
+    g, att = grant(auth, led, action)
+    rc = run_crash(d, lp, wp, auth_priv, exec_priv, action, g, "after_claim")
+    row = gexec.AuthorityLedger(lp).row(att)
+    inv = {i.name: i.ok for i in gexec.independent_verify(
+        gexec.AuthorityLedger(lp), gexec.ExternalWorld(wp), auth.pub, exec_priv.public_key())}
+    ex2 = gexec.GovernedExecutor(gexec.AuthorityLedger(lp), gexec.ExternalWorld(wp), auth.pub, exec_priv)
+    verdict = dict(ex2.recover()).get(att)
+    ok = (rc == 42 and row["state"] == gexec.CLAIMED
+          and inv["no_consumed_nonce_with_available_attempt"]
+          and verdict == gexec.KNOWN_NOT_DISPATCHED)
+    record("C5", "crash", "crash after atomic nonce+claim -> CLAIMED & recoverable, never stranded AVAILABLE",
+           ok, f"crashed={rc==42} state={row['state']} no_stranded={inv['no_consumed_nonce_with_available_attempt']} verdict={verdict}")
+    shutil.rmtree(d, ignore_errors=True)
 
 
 # ----------------------------------------------------------------- D: provider faults
@@ -243,7 +289,19 @@ def cat_E():
     inv3 = {i.name: i.ok for i in gexec.independent_verify(led3, world3, auth3.pub, ep3.public_key())}
     record("E3", "lying-executor", "executor claims COMMITTED but no external effect -> verifier detects",
            not inv3["every_committed_receipt_backed_by_effect"], "verifier rejected a committed receipt with no backing effect")
-    for x in (d, d2, d3):
+
+    # E4: the REAL external effect is altered after a clean commit (its stored content
+    #     no longer matches the signed receipt) -> independent verifier detects it.
+    d4, ap4, ep4, auth4, led4, world4, ex4 = env()
+    g4, att4 = grant(auth4, led4, action)
+    ex4.execute(action, g4)                       # clean COMMITTED
+    c = world4._conn()
+    c.execute("UPDATE effects SET payload_sha256=? WHERE idempotency_key=?", ("00" * 32, att4))
+    c.commit(); c.close()
+    inv4 = {i.name: i.ok for i in gexec.independent_verify(led4, world4, auth4.pub, ep4.public_key())}
+    record("E4", "tamper", "external effect content altered after commit -> verifier detects",
+           not inv4["every_committed_receipt_backed_by_effect"], "verifier flagged effect-content mismatch")
+    for x in (d, d2, d3, d4):
         shutil.rmtree(x, ignore_errors=True)
 
 

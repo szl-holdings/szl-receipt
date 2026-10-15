@@ -140,9 +140,17 @@ class Check:
     reason: str = "ok"
 
 
-def verify_grant(grant_env: dict, authorizer_pub: Ed25519PublicKey, action: dict,
-                 now: Optional[float] = None, expected_tenant: Optional[str] = None) -> Check:
-    """Independent authority check performed by the executor itself."""
+def verify_grant(grant_env: dict, authorizer_pub: Ed25519PublicKey,
+                 action: Optional[dict] = None, now: Optional[float] = None,
+                 expected_tenant: Optional[str] = None,
+                 action_bytes: Optional[bytes] = None) -> Check:
+    """Independent authority check performed by the executor itself.
+
+    Pass `action_bytes` (a snapshot of `canon(action)` taken once) to bind the
+    check to the EXACT bytes that will be dispatched; this closes a time-of-check /
+    time-of-use gap where a mutable `action` dict is altered after validation but
+    before dispatch. `action` is accepted for convenience and canonicalised here
+    only when `action_bytes` is not supplied."""
     now = time.time() if now is None else now
     payload = verify_envelope(grant_env, authorizer_pub, GRANT_TYPE)
     if payload is None:
@@ -151,7 +159,8 @@ def verify_grant(grant_env: dict, authorizer_pub: Ed25519PublicKey, action: dict
     if now > g.expires_at:
         return Check(False, "grant-expired")
     # bind to the EXACT action being executed — catches a swapped/altered request
-    if action_digest(action) != g.action_digest:
+    digest = sha256_hex(action_bytes) if action_bytes is not None else action_digest(action)
+    if digest != g.action_digest:
         return Check(False, "action-digest-mismatch")
     if expected_tenant is not None and g.tenant != expected_tenant:
         return Check(False, "wrong-tenant")
@@ -253,6 +262,8 @@ CLOSED = "CLOSED"
 # terminal reconciliation verdicts
 COMMITTED = "COMMITTED"
 KNOWN_NOT_DISPATCHED = "KNOWN_NOT_DISPATCHED"
+EFFECT_CONFLICT = "EFFECT_CONFLICT"   # an effect exists under the key but its
+                                      # target/payload does not match the grant
 
 
 class AuthorityLedger:
@@ -297,29 +308,41 @@ class AuthorityLedger:
         finally:
             c.close()
 
-    def consume_nonce(self, nonce: str, attempt_id: str) -> bool:
-        """At-most-once nonce. Returns False if already seen (replay)."""
-        c = self._conn()
-        try:
-            c.execute("INSERT INTO seen_nonce VALUES(?,?)", (nonce, attempt_id))
-            c.commit()
-            return True
-        except sqlite3.IntegrityError:
-            return False
-        finally:
-            c.close()
+    def consume_nonce_and_claim(self, nonce: str, attempt_id: str) -> str:
+        """Atomically consume the single-use nonce AND claim AVAILABLE -> CLAIMED in
+        ONE transaction. Folding these together closes the gap dot reported: with two
+        separate commits, a hard exit between them left the nonce burned while the
+        attempt stayed AVAILABLE, so it could never be retried. As one transaction the
+        only durable outcomes are 'nothing happened' or 'both happened'.
 
-    def claim(self, attempt_id: str) -> bool:
-        """Atomic compare-and-swap AVAILABLE -> CLAIMED. Exactly one winner under
-        concurrency (single atomic UPDATE; SQLite serializes writers)."""
+        Returns 'ok' (this caller won), 'replay' (nonce already seen), or
+        'not-claimable' (attempt not AVAILABLE — another caller won the CAS). Exactly
+        one concurrent caller gets 'ok' (BEGIN IMMEDIATE serialises writers)."""
         c = self._conn()
+        c.isolation_level = None   # manual transaction control (literal BEGIN/COMMIT)
         try:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                c.execute("INSERT INTO seen_nonce VALUES(?,?)", (nonce, attempt_id))
+            except sqlite3.IntegrityError:
+                c.execute("ROLLBACK")
+                return "replay"
             cur = c.execute(
                 "UPDATE authority SET state=?, claimed_at=? WHERE attempt_id=? AND state=?",
                 (CLAIMED, time.time(), attempt_id, AVAILABLE),
             )
-            c.commit()
-            return cur.rowcount == 1
+            if cur.rowcount != 1:
+                c.execute("ROLLBACK")   # also un-burns this caller's nonce attempt
+                return "not-claimable"
+            c.execute("COMMIT")
+            return "ok"
+        finally:
+            c.close()
+
+    def all_nonces(self) -> list[dict]:
+        c = self._conn()
+        try:
+            return [dict(r) for r in c.execute("SELECT * FROM seen_nonce").fetchall()]
         finally:
             c.close()
 
@@ -421,6 +444,19 @@ class GovernedExecutor:
         }
         return sign_envelope(payload, self.exec_priv, ENVELOPE_TYPE)
 
+    def _effect_conflict(self, aid: str, grant: dict) -> Optional[str]:
+        """Reconcile the external effect's identity/content against the signed grant.
+        Returns a reason string if an effect exists under this key whose target or
+        payload does NOT match the grant (so it must never be reported COMMITTED),
+        else None. grant['action_digest'] == sha256(canon(authorized action)); the
+        external store records payload_sha256 over the dispatched bytes."""
+        e = self.world.get(aid)
+        if e is None:
+            return "effect-missing"
+        if e["target"] != grant["target"] or e["payload_sha256"] != grant["action_digest"]:
+            return "idempotency-key-conflict"
+        return None
+
     def execute(self, action: dict, grant_env: dict, *, now: Optional[float] = None,
                 crash_hook=None, expected_tenant: Optional[str] = None,
                 provider_fault: Optional[str] = None) -> Outcome:
@@ -428,20 +464,26 @@ class GovernedExecutor:
             if crash_hook:
                 crash_hook(point)
 
-        # 1. INDEPENDENT authority check (signature, expiry, exact action, tenant)
-        chk = verify_grant(grant_env, self.authorizer_pub, action, now=now,
-                           expected_tenant=expected_tenant)
+        # 0. SNAPSHOT the caller's action ONCE. These exact bytes are used for the
+        #    authority check AND the dispatch payload; `action` is never
+        #    re-canonicalised afterwards, so mutating the caller's dict after this
+        #    point cannot change what was authorised or what is dispatched.
+        action_bytes = canon(action)
+
+        # 1. INDEPENDENT authority check (signature, expiry, exact bytes, tenant)
+        chk = verify_grant(grant_env, self.authorizer_pub, now=now,
+                           expected_tenant=expected_tenant, action_bytes=action_bytes)
         if not chk.ok:
             return Outcome("REJECTED", chk.reason)          # zero effect
         grant = json.loads(grant_env["payload"])
         aid = grant["attempt_id"]
 
-        # 2. replay guard: single-use nonce (durable)
-        if not self.ledger.consume_nonce(grant["nonce"], aid):
+        # 2+3. atomic single-use: consume the nonce AND claim in ONE transaction.
+        #      Losers never dispatch; a crash cannot strand an AVAILABLE attempt.
+        status = self.ledger.consume_nonce_and_claim(grant["nonce"], aid)
+        if status == "replay":
             return Outcome("REJECTED", "replay-nonce")        # zero new effect
-
-        # 3. atomic single-use claim (durable CAS). Losers never dispatch.
-        if not self.ledger.claim(aid):
+        if status != "ok":
             return Outcome("REJECTED", "not-available-or-already-claimed")
         crash("after_claim")
 
@@ -450,17 +492,25 @@ class GovernedExecutor:
         self.ledger.mark_dispatch_authorized(aid)
         crash("after_dispatch_authorized")
 
-        # 5. idempotent external effect (at-most-once by key)
+        # 5. idempotent external effect (at-most-once by key), dispatching the exact
+        #    snapshotted bytes.
         try:
             created, effect_id = self.world.apply(
                 idempotency_key=aid, attempt_id=aid, target=grant["target"],
-                payload=canon(action), fault=provider_fault,
+                payload=action_bytes, fault=provider_fault,
             )
         except ProviderUnavailable as exc:
             # Provider gave no definitive response. The effect may or may not have
             # happened. Do NOT claim success; leave the attempt DISPATCH_AUTHORIZED
             # (durable) so recovery resolves it by external readback.
             return Outcome("UNKNOWN", f"provider-unavailable: {exc}")
+
+        # 5a. reconcile effect identity/content against the grant. An effect already
+        #     present under this key with a different target/payload is NEVER success.
+        conflict = self._effect_conflict(aid, grant)
+        if conflict is not None:
+            self.ledger.finalize(aid, CLOSED, EFFECT_CONFLICT)
+            return Outcome("REJECTED", conflict)
         crash("after_effect_before_receipt")
 
         # 6. bind a signed receipt to the REAL effect, then close
@@ -485,6 +535,13 @@ class GovernedExecutor:
                 resolved.append((aid, KNOWN_NOT_DISPATCHED))
             else:
                 grant = json.loads(json.loads(row["grant_env"])["payload"])
+                # reconcile the real effect's content against the signed grant before
+                # claiming success — never promote a mismatched effect to COMMITTED.
+                if (effect["target"] != grant["target"]
+                        or effect["payload_sha256"] != grant["action_digest"]):
+                    self.ledger.finalize(aid, CLOSED, EFFECT_CONFLICT)
+                    resolved.append((aid, EFFECT_CONFLICT))
+                    continue
                 env = self._receipt(grant, effect["effect_id"], COMMITTED)
                 self.ledger.record_receipt(aid, env)
                 self.ledger.finalize(aid, CLOSED, COMMITTED)
@@ -548,6 +605,9 @@ def independent_verify(ledger: AuthorityLedger, world: ExternalWorld,
             e = effects.get(aid)
             if e is None or e["effect_id"] != payload.get("effect_id"):
                 bad_receipts.append((aid, "receipt-without-real-effect"))
+            elif e["target"] != payload.get("target") or e["payload_sha256"] != payload.get("action_digest"):
+                # the real effect's target/content disagrees with what the receipt claims
+                bad_receipts.append((aid, "effect-content-mismatch"))
             elif aid in authority and payload.get("action_digest") != authority[aid]["action_digest"]:
                 bad_receipts.append((aid, "action-digest-mismatch"))
     inv.append(Invariant("every_committed_receipt_backed_by_effect", not bad_receipts,
@@ -561,5 +621,13 @@ def independent_verify(ledger: AuthorityLedger, world: ExternalWorld,
             bad_grants.append(aid)
     inv.append(Invariant("all_grants_authorizer_signed", not bad_grants,
                          f"bad grants: {bad_grants}"))
+
+    # I6: no attempt is left AVAILABLE while its single-use nonce is already consumed.
+    #     The atomic nonce+claim makes this state unreachable; the verifier checks it.
+    stranded = [n["attempt_id"] for n in ledger.all_nonces()
+                if n["attempt_id"] in authority
+                and authority[n["attempt_id"]]["state"] == AVAILABLE]
+    inv.append(Invariant("no_consumed_nonce_with_available_attempt", not stranded,
+                         f"stranded attempts: {stranded}"))
 
     return inv

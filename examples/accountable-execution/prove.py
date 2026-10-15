@@ -1,6 +1,6 @@
 """Proof harness for the accountable-execution guarantee.
 
-Runs four properties, each with the adversary/negative control that would break a
+Runs five properties, each with the adversary/negative control that would break a
 naive implementation, and an independent verifier that reconciles signed receipts
 against the real external world. Exit 0 iff every property and invariant holds.
 
@@ -247,6 +247,78 @@ def property_4_independent_verifier():
     shutil.rmtree(d2, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ property 5
+def property_5_composition_integrity():
+    print("\nProperty 5 — action snapshot, effect-identity reconciliation, atomic nonce+claim")
+    ap, ep = keys()
+    auth = gexec.Authorizer(ap, "policy-v1")
+
+    # 5a: action mutated AFTER the authority check -> the SNAPSHOT is dispatched (TOCTOU)
+    d, lp, wp = fresh()
+    led, world = gexec.AuthorityLedger(lp), gexec.ExternalWorld(wp)
+    ex = gexec.GovernedExecutor(led, world, auth.pub, ep)
+    a = {"op": "charge", "amount": 100, "to": "acct-1"}
+    env, att = new_grant(auth, a); led.register(env)
+    live = dict(a)
+    out = ex.execute(live, env, crash_hook=lambda p: (
+        live.__setitem__("amount", 9999) if p == "after_dispatch_authorized" else None))
+    authorized = json.loads(env["payload"])["action_digest"]
+    check("action mutated post-validation -> snapshot dispatched (TOCTOU closed)",
+          out.status == "COMMITTED" and live["amount"] == 9999
+          and world.get(att)["payload_sha256"] == authorized)
+
+    # 5b: existing key with a different target/payload -> NEVER COMMITTED
+    d2, lp2, wp2 = fresh()
+    led2, world2 = gexec.AuthorityLedger(lp2), gexec.ExternalWorld(wp2)
+    ex2 = gexec.GovernedExecutor(led2, world2, auth.pub, ep)
+    b = {"op": "charge", "amount": 250, "to": "acct-7"}
+    env2, _ = new_grant(auth, b, attempt="att-conf"); led2.register(env2)
+    world2.apply("att-conf", "att-conf", "svc://evil", gexec.canon({"op": "steal"}))
+    o2 = ex2.execute(b, env2)
+    check("existing key, different content -> idempotency-key-conflict, not COMMITTED",
+          o2.status == "REJECTED" and o2.reason == "idempotency-key-conflict"
+          and led2.row("att-conf")["verdict"] == gexec.EFFECT_CONFLICT)
+
+    # 5c: crash right after the atomic nonce+claim -> CLAIMED & recoverable, never stranded
+    d3, lp3, wp3 = fresh()
+    led3 = gexec.AuthorityLedger(lp3); gexec.ExternalWorld(wp3)
+    cc = {"op": "charge", "amount": 500, "to": "acct-9"}
+    env3, att3 = new_grant(auth, cc); led3.register(env3)
+    job = {"ledger": lp3, "world": wp3, "authorizer_pub": ap.public_key().public_bytes_raw().hex(),
+           "exec_priv": ep.private_bytes_raw().hex(), "action": cc, "grant_env": env3,
+           "crash_point": "after_claim"}
+    with open(os.path.join(d3, "job.json"), "w") as f:
+        json.dump(job, f)
+    rc = subprocess.run([sys.executable, os.path.join(HERE, "crash_worker.py"),
+                         os.path.join(d3, "job.json")], cwd=HERE, capture_output=True, text=True).returncode
+    # read the post-crash state and invariant BEFORE recovery (recover() finalises it)
+    state_after_crash = gexec.AuthorityLedger(lp3).row(att3)["state"]
+    inv = {i.name: i.ok for i in gexec.independent_verify(
+        gexec.AuthorityLedger(lp3), gexec.ExternalWorld(wp3), auth.pub, ep.public_key())}
+    verdict = dict(gexec.GovernedExecutor(gexec.AuthorityLedger(lp3), gexec.ExternalWorld(wp3),
+                                          auth.pub, ep).recover()).get(att3)
+    check("crash after atomic nonce+claim -> CLAIMED, not stranded, recoverable",
+          rc == 42 and state_after_crash == gexec.CLAIMED
+          and inv["no_consumed_nonce_with_available_attempt"]
+          and verdict == gexec.KNOWN_NOT_DISPATCHED)
+
+    # 5d: the real effect's content is altered after commit -> the verifier detects it
+    d4, lp4, wp4 = fresh()
+    led4, world4 = gexec.AuthorityLedger(lp4), gexec.ExternalWorld(wp4)
+    ex4 = gexec.GovernedExecutor(led4, world4, auth.pub, ep)
+    e = {"op": "charge", "amount": 42, "to": "acct-z"}
+    env4, att4 = new_grant(auth, e); led4.register(env4); ex4.execute(e, env4)
+    c4 = world4._conn()
+    c4.execute("UPDATE effects SET payload_sha256=? WHERE idempotency_key=?", ("00" * 32, att4))
+    c4.commit(); c4.close()
+    inv4 = {i.name: i.ok for i in gexec.independent_verify(led4, world4, auth.pub, ep.public_key())}
+    check("detects effect-content tamper after commit",
+          not inv4["every_committed_receipt_backed_by_effect"])
+
+    for x in (d, d2, d3, d4):
+        shutil.rmtree(x, ignore_errors=True)
+
+
 def main():
     t0 = time.time()
     print("=" * 72)
@@ -257,6 +329,7 @@ def main():
     property_2_concurrency_at_most_one()
     property_3_crash_never_false_success()
     property_4_independent_verifier()
+    property_5_composition_integrity()
     ok = sum(results)
     total = len(results)
     print("\n" + "=" * 72)

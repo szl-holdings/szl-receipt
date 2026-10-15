@@ -1,14 +1,14 @@
 # Accountable AI Execution — tested reference implementation
 
 A self-contained reference implementation of the governed-action chain, with a test
-suite that exercises its four properties under adversaries. It is **a tested
-reference implementation under explicit assumptions — not a proof about any deployed
-system, and not an unconditional guarantee.**
+suite that exercises its properties under adversaries. It is **a tested reference
+implementation under explicit assumptions — not a proof about any deployed system, and
+not an unconditional guarantee.**
 
 ```
-python3 prove.py                       # property suite (happy path + adversaries)
-python3 -m unittest test_negative -v   # independent negative/adversarial tests
-python3 acceptance_matrix.py           # A–F acceptance matrix (18 named rows)
+python3 prove.py                       # property suite (happy path + adversaries), 40 checks
+python3 -m unittest test_negative -v   # independent negative/adversarial tests, 13 cases
+python3 acceptance_matrix.py           # A–F acceptance matrix (22 named rows)
 python3 acceptance_matrix.py --json    # same, regenerating DEMO_CASES.json
 ```
 
@@ -32,29 +32,42 @@ Policy (grant) → governed executor → external effect → receipt → indepen
 | **2. At-most-once under concurrency** | N racing attempts on one grant | **exactly one** effect |
 | **3. Crashes never fake success** | hard process death before/after dispatch | uncertain state is never a success claim; resolved only by external readback; no double effect on restart |
 | **4. Independent reconciliation** | a forged effect or a tampered receipt | the verifier **detects** it; every committed receipt is backed by a real effect |
+| **5. Composition integrity** | action mutated after validation; foreign effect under the key; crash between nonce and claim | the **snapshot** is dispatched (no TOCTOU); a key hit with different content is never `COMMITTED`; nonce-consume + claim are **atomic** so no attempt is stranded |
 
-`test_negative.py` runs the adversarial cases (1, 3, 4) as standalone `unittest`
-cases, independent of the `prove.py` harness, so the negative controls can be run and
-reviewed on their own.
+`test_negative.py` runs the adversarial cases as standalone `unittest` cases,
+independent of the `prove.py` harness, so the negative controls can be run and reviewed
+on their own.
 
 ## The A–F acceptance matrix
 
-`acceptance_matrix.py` runs **18 named, individually-labelled rows** grouped into six
+`acceptance_matrix.py` runs **22 named, individually-labelled rows** grouped into six
 families, each asserting the exact behaviour that must hold (and the things that must
 *not* happen). `--json` writes the machine-readable outcomes to `DEMO_CASES.json`.
 
 | Family | Rows | What it pins down |
 |---|---|---|
-| **A. Authority is exact & single-use** | A1–A6 | tampered-body, expired, missing-authority, wrong-tenant, replay, forged-signature → **zero** effect |
-| **B. Concurrency** | B1–B2 | N racers → at-most-one effect and **truthful losers**; same key / different payload → no second effect |
-| **C. Crash safety** | C1–C4 | hard death at four points never turns an uncertain result into a success claim |
+| **A. Authority is exact & single-use** | A1–A7 | tampered-body, expired, missing-authority, wrong-tenant, replay, forged-signature → **zero** effect; **A7** action mutated after validation → the snapshot is dispatched, not the mutation |
+| **B. Concurrency & effect-identity** | B1–B3 | N racers → at-most-one effect and **truthful losers**; same key / different payload → no second effect; **B3** existing key with a different target/payload → `EFFECT_CONFLICT`, never `COMMITTED` |
+| **C. Crash safety** | C1–C5 | hard death at five points never turns an uncertain result into a success claim; **C5** crash between nonce and claim leaves a `CLAIMED`, recoverable attempt — never a stranded `AVAILABLE` one with a burned nonce |
 | **D. Provider faults** | D1–D2 | fault **before** commit → `UNKNOWN`, not-dispatched; commit **but response lost** → `UNKNOWN`, then `COMMITTED` by readback |
-| **E. Verifier catches a liar** | E1–E3 | forged effect, tampered receipt, executor that *claims* success with no effect → **detected** |
+| **E. Verifier catches a liar** | E1–E4 | forged effect, tampered receipt, executor that *claims* success with no effect, **E4** real effect content altered after commit → **detected** |
 | **F. Positive path** | F1 | authorized action → exactly one real effect, correct binding, all invariants clean |
 
 The D family is the honesty core: a provider timeout or lost response is **never**
 read as proof of cancellation or of success — the outcome stays `UNKNOWN` until the
 external world is read back. Nothing is summed across families; each row stands alone.
+
+### Review round 3 (independent review by `dot`) — closed here
+
+Three correctness findings from an independent exact-head reproduction are fixed and
+regression-covered: (1) **action snapshot** — `canon(action)` is taken once and reused
+for the authority check and the dispatch, closing a time-of-check/time-of-use gap
+(A7, Property 5a); (2) **effect-identity reconciliation** — the executor and the
+verifier reconcile the external effect's target/payload against the signed grant, so a
+key hit with different content is never reported `COMMITTED` (B3, E4, Property 5b/5d,
+verifier invariant `effect-content-mismatch`); (3) **atomic nonce + claim** — folded
+into one transaction so a hard exit can't strand an `AVAILABLE` attempt with a consumed
+nonce (C5, Property 5c, verifier invariant `no_consumed_nonce_with_available_attempt`).
 
 ## The two-store transaction & idempotency boundary
 

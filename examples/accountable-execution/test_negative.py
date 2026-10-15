@@ -163,5 +163,63 @@ class TestCrashNeverFakesSuccess(Base):
         self.assertEqual(gexec.ExternalWorld(self.wp).count(att), 1)
 
 
+class TestActionSnapshot(Base):
+    def test_action_mutation_after_validation_dispatches_the_snapshot(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        live = dict(action)
+        out = self.ex.execute(live, env, crash_hook=lambda p: (
+            live.__setitem__("amount", 9999) if p == "after_dispatch_authorized" else None))
+        self.assertEqual(out.status, "COMMITTED")
+        self.assertEqual(live["amount"], 9999)                 # the mutation really happened
+        authorized = json.loads(env["payload"])["action_digest"]
+        self.assertEqual(self.world.get(att)["payload_sha256"], authorized)  # snapshot dispatched
+
+
+class TestEffectIdentityReconciliation(Base):
+    def test_existing_key_with_different_content_is_not_committed(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        self.world.apply(att, att, "svc://evil", gexec.canon({"op": "steal"}))  # foreign effect first
+        out = self.ex.execute(action, env)
+        self.assertEqual(out.status, "REJECTED")
+        self.assertEqual(out.reason, "idempotency-key-conflict")
+        self.assertEqual(self.led.row(att)["verdict"], gexec.EFFECT_CONFLICT)
+
+    def test_tampered_effect_content_is_detected_by_verifier(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        self.ex.execute(action, env)
+        c = self.world._conn()
+        c.execute("UPDATE effects SET payload_sha256=? WHERE idempotency_key=?", ("00" * 32, att))
+        c.commit(); c.close()
+        inv = {i.name: i.ok for i in gexec.independent_verify(
+            self.led, self.world, self.auth.pub, self.ep.public_key())}
+        self.assertFalse(inv["every_committed_receipt_backed_by_effect"])
+
+
+class TestAtomicNonceClaim(Base):
+    def test_crash_after_claim_never_strands_an_available_attempt(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        job = {"ledger": self.lp, "world": self.wp,
+               "authorizer_pub": self.ap.public_key().public_bytes_raw().hex(),
+               "exec_priv": self.ep.private_bytes_raw().hex(),
+               "action": action, "grant_env": env, "crash_point": "after_claim"}
+        jp = os.path.join(self.dir, "job.json")
+        with open(jp, "w") as f:
+            json.dump(job, f)
+        rc = subprocess.run([sys.executable, os.path.join(HERE, "crash_worker.py"), jp],
+                            cwd=HERE, capture_output=True, text=True).returncode
+        self.assertEqual(rc, 42)
+        self.assertEqual(self.led.row(att)["state"], gexec.CLAIMED)   # claimed, not AVAILABLE
+        inv = {i.name: i.ok for i in gexec.independent_verify(
+            self.led, self.world, self.auth.pub, self.ep.public_key())}
+        self.assertTrue(inv["no_consumed_nonce_with_available_attempt"])
+        ex2 = gexec.GovernedExecutor(gexec.AuthorityLedger(self.lp),
+                                     gexec.ExternalWorld(self.wp), self.auth.pub, self.ep)
+        self.assertEqual(dict(ex2.recover()).get(att), gexec.KNOWN_NOT_DISPATCHED)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
