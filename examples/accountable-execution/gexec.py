@@ -92,6 +92,7 @@ class Grant:
     proposal_id: str
     action_digest: str
     target: str
+    tenant: str
     policy_revision: str
     allowance_id: str
     attempt_id: str      # single-use authorized attempt; also the idempotency key
@@ -115,12 +116,14 @@ class Authorizer:
         return self._priv.public_key()
 
     def issue(self, *, proposal_id, action: dict, target, allowance_id, attempt_id,
-              nonce, ttl_s: float = 30.0, now: Optional[float] = None) -> dict:
+              nonce, tenant: str = "tenant-A", ttl_s: float = 30.0,
+              now: Optional[float] = None) -> dict:
         now = time.time() if now is None else now
         g = Grant(
             proposal_id=proposal_id,
             action_digest=action_digest(action),
             target=target,
+            tenant=tenant,
             policy_revision=self.policy_revision,
             allowance_id=allowance_id,
             attempt_id=attempt_id,
@@ -138,7 +141,7 @@ class Check:
 
 
 def verify_grant(grant_env: dict, authorizer_pub: Ed25519PublicKey, action: dict,
-                 now: Optional[float] = None) -> Check:
+                 now: Optional[float] = None, expected_tenant: Optional[str] = None) -> Check:
     """Independent authority check performed by the executor itself."""
     now = time.time() if now is None else now
     payload = verify_envelope(grant_env, authorizer_pub, GRANT_TYPE)
@@ -150,10 +153,18 @@ def verify_grant(grant_env: dict, authorizer_pub: Ed25519PublicKey, action: dict
     # bind to the EXACT action being executed — catches a swapped/altered request
     if action_digest(action) != g.action_digest:
         return Check(False, "action-digest-mismatch")
+    if expected_tenant is not None and g.tenant != expected_tenant:
+        return Check(False, "wrong-tenant")
     return Check(True)
 
 
 # ---------------------------------------------------------------- durable stores
+class ProviderUnavailable(Exception):
+    """The external service failed to return a definitive response (timeout / 5xx /
+    lost response). The effect may or may not have happened — the executor must
+    preserve this uncertainty and never report success."""
+
+
 class ExternalWorld:
     """A SEPARATE durable system that performs effects at-most-once per idempotency
     key (models a real external API's own idempotency, e.g. a payment key)."""
@@ -178,10 +189,15 @@ class ExternalWorld:
         return c
 
     def apply(self, idempotency_key: str, attempt_id: str, target: str,
-              payload: bytes) -> tuple[bool, str]:
+              payload: bytes, fault: Optional[str] = None) -> tuple[bool, str]:
         """Perform the external effect. Returns (created, effect_id). A duplicate
-        idempotency key performs NO second effect and returns the existing id."""
+        idempotency key performs NO second effect and returns the existing id.
+        `fault` models a provider failure and raises ProviderUnavailable:
+        'fail_before_commit' (no effect happened) or 'lose_response_after_commit'
+        (the effect IS committed but no definitive response is returned)."""
         effect_id = sha256_hex(b"effect:" + idempotency_key.encode())[:16]
+        if fault == "fail_before_commit":
+            raise ProviderUnavailable("provider error before commit")
         c = self._conn()
         try:
             c.execute(
@@ -189,6 +205,8 @@ class ExternalWorld:
                 (idempotency_key, attempt_id, target, sha256_hex(payload), effect_id, time.time()),
             )
             c.commit()
+            if fault == "lose_response_after_commit":
+                raise ProviderUnavailable("response lost after commit")
             return True, effect_id
         except sqlite3.IntegrityError:
             row = c.execute(
@@ -404,13 +422,15 @@ class GovernedExecutor:
         return sign_envelope(payload, self.exec_priv, ENVELOPE_TYPE)
 
     def execute(self, action: dict, grant_env: dict, *, now: Optional[float] = None,
-                crash_hook=None) -> Outcome:
+                crash_hook=None, expected_tenant: Optional[str] = None,
+                provider_fault: Optional[str] = None) -> Outcome:
         def crash(point):
             if crash_hook:
                 crash_hook(point)
 
-        # 1. INDEPENDENT authority check (signature, expiry, exact action binding)
-        chk = verify_grant(grant_env, self.authorizer_pub, action, now=now)
+        # 1. INDEPENDENT authority check (signature, expiry, exact action, tenant)
+        chk = verify_grant(grant_env, self.authorizer_pub, action, now=now,
+                           expected_tenant=expected_tenant)
         if not chk.ok:
             return Outcome("REJECTED", chk.reason)          # zero effect
         grant = json.loads(grant_env["payload"])
@@ -431,15 +451,23 @@ class GovernedExecutor:
         crash("after_dispatch_authorized")
 
         # 5. idempotent external effect (at-most-once by key)
-        created, effect_id = self.world.apply(
-            idempotency_key=aid, attempt_id=aid, target=grant["target"], payload=canon(action)
-        )
+        try:
+            created, effect_id = self.world.apply(
+                idempotency_key=aid, attempt_id=aid, target=grant["target"],
+                payload=canon(action), fault=provider_fault,
+            )
+        except ProviderUnavailable as exc:
+            # Provider gave no definitive response. The effect may or may not have
+            # happened. Do NOT claim success; leave the attempt DISPATCH_AUTHORIZED
+            # (durable) so recovery resolves it by external readback.
+            return Outcome("UNKNOWN", f"provider-unavailable: {exc}")
         crash("after_effect_before_receipt")
 
         # 6. bind a signed receipt to the REAL effect, then close
         env = self._receipt(grant, effect_id, COMMITTED)
         self.ledger.record_receipt(aid, env)
         self.ledger.finalize(aid, CLOSED, COMMITTED)
+        crash("after_close_before_return")
         return Outcome("COMMITTED", "ok", effect_id, created)
 
     def recover(self) -> list[tuple[str, str]]:

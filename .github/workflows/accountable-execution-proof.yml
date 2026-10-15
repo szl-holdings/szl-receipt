@@ -34,3 +34,9 @@ jobs:
         run: python3 prove.py
       - name: Independent negative / adversarial tests
         run: python3 -m unittest test_negative -v
+      - name: A–F acceptance matrix (18 rows)
+        run: python3 acceptance_matrix.py
+      - name: DEMO_CASES.json is in sync with the matrix
+        run: |
+          python3 acceptance_matrix.py --json
+          git diff --exit-code -- DEMO_CASES.json

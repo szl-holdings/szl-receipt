@@ -6,8 +6,10 @@ reference implementation under explicit assumptions — not a proof about any de
 system, and not an unconditional guarantee.**
 
 ```
-python3 prove.py                 # property suite (happy path + adversaries)
+python3 prove.py                       # property suite (happy path + adversaries)
 python3 -m unittest test_negative -v   # independent negative/adversarial tests
+python3 acceptance_matrix.py           # A–F acceptance matrix (18 named rows)
+python3 acceptance_matrix.py --json    # same, regenerating DEMO_CASES.json
 ```
 
 Python standard library + `cryptography` only. No network, no spend, no external
@@ -34,6 +36,25 @@ Policy (grant) → governed executor → external effect → receipt → indepen
 `test_negative.py` runs the adversarial cases (1, 3, 4) as standalone `unittest`
 cases, independent of the `prove.py` harness, so the negative controls can be run and
 reviewed on their own.
+
+## The A–F acceptance matrix
+
+`acceptance_matrix.py` runs **18 named, individually-labelled rows** grouped into six
+families, each asserting the exact behaviour that must hold (and the things that must
+*not* happen). `--json` writes the machine-readable outcomes to `DEMO_CASES.json`.
+
+| Family | Rows | What it pins down |
+|---|---|---|
+| **A. Authority is exact & single-use** | A1–A6 | tampered-body, expired, missing-authority, wrong-tenant, replay, forged-signature → **zero** effect |
+| **B. Concurrency** | B1–B2 | N racers → at-most-one effect and **truthful losers**; same key / different payload → no second effect |
+| **C. Crash safety** | C1–C4 | hard death at four points never turns an uncertain result into a success claim |
+| **D. Provider faults** | D1–D2 | fault **before** commit → `UNKNOWN`, not-dispatched; commit **but response lost** → `UNKNOWN`, then `COMMITTED` by readback |
+| **E. Verifier catches a liar** | E1–E3 | forged effect, tampered receipt, executor that *claims* success with no effect → **detected** |
+| **F. Positive path** | F1 | authorized action → exactly one real effect, correct binding, all invariants clean |
+
+The D family is the honesty core: a provider timeout or lost response is **never**
+read as proof of cancellation or of success — the outcome stays `UNKNOWN` until the
+external world is read back. Nothing is summed across families; each row stands alone.
 
 ## The two-store transaction & idempotency boundary
 

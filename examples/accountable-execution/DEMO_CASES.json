@@ -1,0 +1,132 @@
+{
+  "schema": "szl.accountable-execution.demo-cases/1",
+  "note": "Reference implementation under README threat model; not a deployed-system claim.",
+  "rows": [
+    {
+      "id": "A1",
+      "category": "authority",
+      "description": "tampered body / wrong digest -> deny, 0 effects",
+      "label": "PASS",
+      "evidence": "action-digest-mismatch; effects=0"
+    },
+    {
+      "id": "A2",
+      "category": "authority",
+      "description": "expired grant -> deny, 0 effects",
+      "label": "PASS",
+      "evidence": "grant-expired; effects=0"
+    },
+    {
+      "id": "A3",
+      "category": "authority",
+      "description": "missing authority (unregistered attempt) -> deny, 0 effects",
+      "label": "PASS",
+      "evidence": "not-available-or-already-claimed; effects=0"
+    },
+    {
+      "id": "A4",
+      "category": "authority",
+      "description": "wrong tenant -> deny, 0 effects",
+      "label": "PASS",
+      "evidence": "wrong-tenant; effects=0"
+    },
+    {
+      "id": "A5",
+      "category": "authority",
+      "description": "replayed/consumed grant -> second denied, exactly 1 effect",
+      "label": "PASS",
+      "evidence": "first=COMMITTED second=replay-nonce; effects=1"
+    },
+    {
+      "id": "A6",
+      "category": "authority",
+      "description": "forged grant signature -> deny, 0 effects",
+      "label": "PASS",
+      "evidence": "grant-signature-invalid; effects=0"
+    },
+    {
+      "id": "B1",
+      "category": "at-most-once",
+      "description": "N concurrent identical requests -> exactly 1 effect; losers truthful",
+      "label": "PASS",
+      "evidence": "commits=1 effects=1 losers_truthful=True"
+    },
+    {
+      "id": "B2",
+      "category": "at-most-once",
+      "description": "different payloads, same idempotency key -> exactly 1 effect",
+      "label": "PASS",
+      "evidence": "created=(True,False) effects=1"
+    },
+    {
+      "id": "C1",
+      "category": "crash",
+      "description": "hard crash @ after_claim -> never a false success; resolved by external readback",
+      "label": "PASS",
+      "evidence": "crashed=True verdict=KNOWN_NOT_DISPATCHED effects=0 no_false_success=True"
+    },
+    {
+      "id": "C2",
+      "category": "crash",
+      "description": "hard crash @ after_dispatch_authorized -> never a false success; resolved by external readback",
+      "label": "PASS",
+      "evidence": "crashed=True verdict=KNOWN_NOT_DISPATCHED effects=0 no_false_success=True"
+    },
+    {
+      "id": "C3",
+      "category": "crash",
+      "description": "hard crash @ after_effect_before_receipt -> never a false success; resolved by external readback",
+      "label": "PASS",
+      "evidence": "crashed=True verdict=COMMITTED effects=1 no_false_success=True"
+    },
+    {
+      "id": "C4",
+      "category": "crash",
+      "description": "hard crash @ after_close_before_return -> never a false success; resolved by external readback",
+      "label": "PASS",
+      "evidence": "crashed=True closed=CLOSED effects=1 receipts(pre)=1"
+    },
+    {
+      "id": "D1",
+      "category": "provider-fault",
+      "description": "provider fails before commit -> UNKNOWN; recovery -> not dispatched, 0 effects",
+      "label": "PASS",
+      "evidence": "provider-unavailable: provider error before commit; effects=0; verdict=KNOWN_NOT_DISPATCHED"
+    },
+    {
+      "id": "D2",
+      "category": "provider-fault",
+      "description": "provider commits but response lost -> UNKNOWN; recovery confirms by readback, 1 effect",
+      "label": "PASS",
+      "evidence": "provider-unavailable: response lost after commit; effects=1; verdict=COMMITTED"
+    },
+    {
+      "id": "E1",
+      "category": "tamper",
+      "description": "forged external effect with no authority -> verifier detects",
+      "label": "PASS",
+      "evidence": "verifier flagged unauthorized effect"
+    },
+    {
+      "id": "E2",
+      "category": "tamper",
+      "description": "tampered receipt bytes -> signature verification fails",
+      "label": "PASS",
+      "evidence": "verifier rejected tampered receipt"
+    },
+    {
+      "id": "E3",
+      "category": "lying-executor",
+      "description": "executor claims COMMITTED but no external effect -> verifier detects",
+      "label": "PASS",
+      "evidence": "verifier rejected a committed receipt with no backing effect"
+    },
+    {
+      "id": "F1",
+      "category": "positive",
+      "description": "authorized path -> exactly one real effect, correct binding, verifier clean",
+      "label": "PASS",
+      "evidence": "status=COMMITTED effects=1 invariants_all_ok=True"
+    }
+  ]
+}

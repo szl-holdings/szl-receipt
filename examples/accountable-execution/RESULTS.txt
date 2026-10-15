@@ -52,7 +52,7 @@ Property 4 — an independent verifier reconciles receipts with external state
   [PASS] detects a tampered receipt (signature breaks)
 
 ========================================================================
-35/35 checks passed in 0.56s
+35/35 checks passed in 0.52s
 ALL CHECKS PASSED — properties hold in this reference implementation,
 under the explicit assumptions in README.md. Not a claim about any
 deployed system; see 'What this does and does not establish'.
@@ -72,7 +72,34 @@ test_forged_effect_without_authority_is_detected (test_negative.TestIndependentV
 test_tampered_receipt_is_detected (test_negative.TestIndependentVerifierDetectsTampering.test_tampered_receipt_is_detected) ... ok
 
 ----------------------------------------------------------------------
-Ran 9 tests in 0.310s
+Ran 9 tests in 0.343s
 
 OK
+(exit 0)
+
+## python3 acceptance_matrix.py
+
+ACCOUNTABLE EXECUTION — falsifiable acceptance matrix (reference implementation)
+Under the explicit assumptions in README.md. Not a claim about a deployed system.
+
+  PASS  A1  [authority     ] tampered body / wrong digest -> deny, 0 effects                                                   — action-digest-mismatch; effects=0
+  PASS  A2  [authority     ] expired grant -> deny, 0 effects                                                                  — grant-expired; effects=0
+  PASS  A3  [authority     ] missing authority (unregistered attempt) -> deny, 0 effects                                       — not-available-or-already-claimed; effects=0
+  PASS  A4  [authority     ] wrong tenant -> deny, 0 effects                                                                   — wrong-tenant; effects=0
+  PASS  A5  [authority     ] replayed/consumed grant -> second denied, exactly 1 effect                                        — first=COMMITTED second=replay-nonce; effects=1
+  PASS  A6  [authority     ] forged grant signature -> deny, 0 effects                                                         — grant-signature-invalid; effects=0
+  PASS  B1  [at-most-once  ] N concurrent identical requests -> exactly 1 effect; losers truthful                              — commits=1 effects=1 losers_truthful=True
+  PASS  B2  [at-most-once  ] different payloads, same idempotency key -> exactly 1 effect                                      — created=(True,False) effects=1
+  PASS  C1  [crash         ] hard crash @ after_claim -> never a false success; resolved by external readback                  — crashed=True verdict=KNOWN_NOT_DISPATCHED effects=0 no_false_success=True
+  PASS  C2  [crash         ] hard crash @ after_dispatch_authorized -> never a false success; resolved by external readback    — crashed=True verdict=KNOWN_NOT_DISPATCHED effects=0 no_false_success=True
+  PASS  C3  [crash         ] hard crash @ after_effect_before_receipt -> never a false success; resolved by external readback  — crashed=True verdict=COMMITTED effects=1 no_false_success=True
+  PASS  C4  [crash         ] hard crash @ after_close_before_return -> never a false success; resolved by external readback    — crashed=True closed=CLOSED effects=1 receipts(pre)=1
+  PASS  D1  [provider-fault] provider fails before commit -> UNKNOWN; recovery -> not dispatched, 0 effects                    — provider-unavailable: provider error before commit; effects=0; verdict=KNOWN_NOT_DISPATCHED
+  PASS  D2  [provider-fault] provider commits but response lost -> UNKNOWN; recovery confirms by readback, 1 effect            — provider-unavailable: response lost after commit; effects=1; verdict=COMMITTED
+  PASS  E1  [tamper        ] forged external effect with no authority -> verifier detects                                      — verifier flagged unauthorized effect
+  PASS  E2  [tamper        ] tampered receipt bytes -> signature verification fails                                            — verifier rejected tampered receipt
+  PASS  E3  [lying-executor] executor claims COMMITTED but no external effect -> verifier detects                              — verifier rejected a committed receipt with no backing effect
+  PASS  F1  [positive      ] authorized path -> exactly one real effect, correct binding, verifier clean                       — status=COMMITTED effects=1 invariants_all_ok=True
+
+18/18 acceptance rows pass.
 (exit 0)
