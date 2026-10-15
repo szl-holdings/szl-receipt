@@ -164,7 +164,7 @@ def property_3_crash_never_false_success():
         ("after_effect_before_receipt", 1, gexec.COMMITTED),
     ]:
         d, lp, wp = fresh()
-        led, world = gexec.AuthorityLedger(lp), gexec.ExternalWorld(wp)
+        led, _world = gexec.AuthorityLedger(lp), gexec.ExternalWorld(wp)
         env, att = new_grant(auth, action)
         led.register(env)
 
