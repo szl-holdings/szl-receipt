@@ -7,7 +7,7 @@ not an unconditional guarantee.**
 
 ```
 python3 prove.py                       # property suite (happy path + adversaries), 49 checks
-python3 -m unittest test_negative -v   # independent negative/adversarial tests, 49 cases
+python3 -m unittest test_negative -v   # independent negative/adversarial tests, 53 cases
 python3 acceptance_matrix.py           # A–F acceptance matrix (38 named rows)
 python3 acceptance_matrix.py --json    # same, regenerating DEMO_CASES.json
 ```
@@ -55,7 +55,10 @@ unknown values and fail closed; they must be re-issued into a fresh demo ledger.
 Receipt uniqueness conflicts roll back the entire close transaction and return an
 unknown outcome rather than claiming a receipt was persisted.
 
-Stored malformed envelopes produce failed invariants. Online verification reads one
+Stored malformed envelopes produce failed invariants, including JSON strings that
+exceed the parser's nesting limit. Request payloads and signature structures that
+exceed the parser/encoder recursion limit are rejected at their envelope boundary.
+Online verification reads one
 consistent ledger snapshot on each side of an external-state read, retrying changes
 up to three times. An active attempt or continuously changing ledger returns
 `Invariant.ok = None` (unresolved), distinct from `False` (a violation) and `True`
@@ -63,7 +66,7 @@ up to three times. An active attempt or continuously changing ledger returns
 unresolved observations need a later retry or recovery. This avoids certifying an
 in-flight effect while also avoiding a false tamper report during normal execution.
 
-The 15 `TestReviewRegressions` cases cover these boundaries, including an execution
+The 19 `TestReviewRegressions` cases cover these boundaries, including an execution
 that commits during verification. These remain host-local reference checks, not
 production guarantees. The original 11 reproductions failed against head `a450f10`
 (nine failures and two parse errors) before the fixes; RESULTS.txt records the rerun.

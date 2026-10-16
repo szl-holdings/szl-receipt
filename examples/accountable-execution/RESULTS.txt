@@ -187,3 +187,18 @@ Under the explicit assumptions in README.md. Not a claim about a deployed system
 38/38 acceptance rows pass.
 
 DEMO_CASES.json regeneration: exact match
+
+FOLLOW-UP: bounded-depth malformed-envelope rejection
+Recorded UTC: 2026-10-16T21:47:43.096422+00:00
+Reviewed baseline: 5992e10b2179efce2b02671e7bc4abf6a8b420ed
+Successor base main: 6aaa19d (PR #55 merged in another session)
+Environment: Linux, Python 3.12.14, cryptography 50.0.2
+gexec.py SHA256: 3d0270caeeac1e5aca5497f7f739a36f6560d421d5b468846865832120b12cd7
+test_negative.py SHA256: 22c41aa5fe91563d415d3aef4e54c749f3dd9ffee7a3ee07d773653411511f1a
+Negative control on baseline: all four independent depth regressions raised RecursionError.
+Inputs: 20,001-byte nested JSON for stored grant, stored receipt, and request payload; nested Python lists for request signatures.
+After repair: all four independent depth regressions pass.
+python -m unittest test_negative -v: 53 tests passed in 2.254s.
+python prove.py: 49/49 checks passed in 0.45s.
+python acceptance_matrix.py --json: 38/38 rows passed; DEMO_CASES.json unchanged.
+Counts remain separate; this is local reference-model evidence, not deployment qualification.

@@ -85,7 +85,8 @@ def verify_envelope(env: dict, trusted_pub: Ed25519PublicKey, payload_type: str)
             return None
         trusted_pub.verify(bytes.fromhex(sig_entry["sig"]), dsse_pae(payload_type, body))
         return json.loads(body)
-    except (InvalidSignature, KeyError, ValueError, IndexError, TypeError, AttributeError):
+    except (InvalidSignature, KeyError, ValueError, IndexError, TypeError, AttributeError,
+            RecursionError):
         return None   # any malformed envelope is a rejection, never an exception
 
 
@@ -154,7 +155,7 @@ def snapshot_envelope(env) -> Optional[dict]:
         snap = {"payloadType": env.get("payloadType"), "payload": env["payload"],
                 "signatures": env["signatures"]}
         return json.loads(json.dumps(snap))
-    except (AttributeError, KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError, RecursionError):
         return None
 
 
@@ -245,7 +246,7 @@ def grant_bound_to_row(grant: dict, row: dict) -> bool:
 def stored_envelope(raw):
     try:
         return json.loads(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
 
 
