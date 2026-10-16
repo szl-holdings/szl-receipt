@@ -1,0 +1,42 @@
+# Re-runs the accountable-execution reference test suite on every change to it.
+# Scoped to examples/accountable-execution/** so it adds no noise elsewhere.
+name: accountable-execution-proof
+
+on:
+  pull_request:
+    paths:
+      - 'examples/accountable-execution/**'
+      - '.github/workflows/accountable-execution-proof.yml'
+  push:
+    paths:
+      - 'examples/accountable-execution/**'
+      - '.github/workflows/accountable-execution-proof.yml'
+  merge_group:
+    types:
+      - checks_requested
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/accountable-execution
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install dependency
+        run: python3 -m pip install --user cryptography
+      - name: Property suite (happy path + adversaries)
+        env:
+          NO_COLOR: "1"
+        run: python3 prove.py
+      - name: Independent negative / adversarial tests
+        run: python3 -m unittest test_negative -v
+      - name: A–F acceptance matrix (18 rows)
+        run: python3 acceptance_matrix.py
+      - name: DEMO_CASES.json is in sync with the matrix
+        run: |
+          python3 acceptance_matrix.py --json
+          git diff --exit-code -- DEMO_CASES.json
