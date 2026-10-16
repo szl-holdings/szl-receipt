@@ -1,8 +1,14 @@
-# Accountable-execution reference suite — reproducible results
-# python 3.13.16 · cryptography 50.0.1 · Linux
+Accountable-execution review regression verification
+UTC: 2026-10-16T21:42:55Z
+Base PR head: a450f104e4db2301298331543262e115e630e3d8
+Environment: Linux-6.18.44-x86_64-with-glibc2.39 / Python 3.12.14 / cryptography 50.0.2
+Original 11 review regressions: 9 failures, 2 errors before fixes (review-before.txt retained in audit workspace).
+Results below are separate suites with distinct counting units; do not sum them.
+gexec.py SHA256: 962893772d0ba983fc2cc3de428073f95accd143d8e7457aa61f8b0470e4d364
+test_negative.py SHA256: 479635a35f1718a4260a5f7223677e4ea710407de45c7dda15a6169b47358e3d
 
-## python3 prove.py
-
+COMMAND: /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python prove.py
+EXIT: 0
 ========================================================================
 ACCOUNTABLE AI EXECUTION — reference implementation · test suite
 Tested under the explicit assumptions in README.md (threat model).
@@ -43,8 +49,8 @@ Property 3 — crash before/after dispatch never silently becomes success
   [PASS] [after_effect_before_receipt] re-running recovery creates no extra effect
 
 Property 4 — an independent verifier reconciles receipts with external state
-  [PASS] invariant: at_most_one_effect_per_attempt  — 5 effects / 5 distinct attempts
-  [PASS] invariant: no_effect_without_committed_authority  — unauthorized effects: []
+  [PASS] invariant: at_most_one_effect_per_attempt  — 5 effects / 5 distinct attempts; key_binding=True
+  [PASS] invariant: no_effect_without_committed_authority  — unauthorized effects: []; unresolved attempts: []
   [PASS] invariant: no_effect_for_not_dispatched  — leaked effects: []
   [PASS] invariant: every_committed_receipt_backed_by_effect  — bad receipts: []
   [PASS] invariant: all_grants_authorizer_signed  — bad grants: []
@@ -70,15 +76,14 @@ Property 6 — verified-grant snapshot, claim CAS, recovery fencing, receipt sem
   [PASS] detects a signed non-COMMITTED receipt contradicting the ledger/effect
 
 ========================================================================
-49/49 checks passed in 1.75s
+49/49 checks passed in 0.36s
 ALL CHECKS PASSED — properties hold in this reference implementation,
 under the explicit assumptions in README.md. Not a claim about any
 deployed system; see 'What this does and does not establish'.
 ========================================================================
-(exit 0)
 
-## python3 -m unittest test_negative -v
-
+COMMAND: /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python -m unittest test_negative -v
+EXIT: 0
 test_action_mutation_after_validation_dispatches_the_snapshot (test_negative.TestActionSnapshot.test_action_mutation_after_validation_dispatches_the_snapshot) ... ok
 test_grant_expiring_while_waiting_for_the_lock_is_rejected (test_negative.TestAdmissionTiming.test_grant_expiring_while_waiting_for_the_lock_is_rejected) ... ok
 test_replay_is_rejected_without_waiting_for_an_in_flight_dispatch (test_negative.TestAdmissionTiming.test_replay_is_rejected_without_waiting_for_an_in_flight_dispatch) ... ok
@@ -111,18 +116,32 @@ test_late_out_of_band_close_never_yields_a_contradictory_receipt (test_negative.
 test_receipt_identity_swap_is_detected (test_negative.TestReceiptSemantics.test_receipt_identity_swap_is_detected) ... ok
 test_signed_grant_and_receipt_target_disagreement_is_detected (test_negative.TestReceiptSemantics.test_signed_grant_and_receipt_target_disagreement_is_detected) ... ok
 test_signed_non_committed_receipt_mismatch_is_detected (test_negative.TestReceiptSemantics.test_signed_non_committed_receipt_mismatch_is_detected) ... ok
+test_effect_must_use_authorized_idempotency_key (test_negative.TestReviewRegressions.test_effect_must_use_authorized_idempotency_key) ... ok
+test_expired_effect_without_dispatch_authorization_is_detected (test_negative.TestReviewRegressions.test_expired_effect_without_dispatch_authorization_is_detected) ... ok
+test_expiry_during_claim_prevents_dispatch (test_negative.TestReviewRegressions.test_expiry_during_claim_prevents_dispatch) ... ok
+test_future_dated_grant_is_not_yet_valid (test_negative.TestReviewRegressions.test_future_dated_grant_is_not_yet_valid) ... ok
+test_late_dispatch_timestamp_is_detected (test_negative.TestReviewRegressions.test_late_dispatch_timestamp_is_detected) ... ok
+test_malformed_stored_grants_are_reported_not_raised (test_negative.TestReviewRegressions.test_malformed_stored_grants_are_reported_not_raised) ... ok
+test_malformed_stored_receipts_are_reported_not_raised (test_negative.TestReviewRegressions.test_malformed_stored_receipts_are_reported_not_raised) ... ok
+test_old_caller_timestamp_cannot_revive_expired_grant (test_negative.TestReviewRegressions.test_old_caller_timestamp_cannot_revive_expired_grant) ... ok
+test_signed_malformed_grants_fail_closed_without_exceptions (test_negative.TestReviewRegressions.test_signed_malformed_grants_fail_closed_without_exceptions) ... ok
+test_signed_non_mapping_payload_is_rejected (test_negative.TestReviewRegressions.test_signed_non_mapping_payload_is_rejected) ... ok
+test_signed_tenant_substitution_is_detected (test_negative.TestReviewRegressions.test_signed_tenant_substitution_is_detected) ... ok
+test_stale_receipt_prevents_atomic_close (test_negative.TestReviewRegressions.test_stale_receipt_prevents_atomic_close) ... ok
+test_verification_during_live_effect_is_unresolved_not_tamper (test_negative.TestReviewRegressions.test_verification_during_live_effect_is_unresolved_not_tamper) ... ok
+test_verifier_reports_continuous_ledger_changes_as_unresolved (test_negative.TestReviewRegressions.test_verifier_reports_continuous_ledger_changes_as_unresolved) ... ok
+test_verifier_retries_a_commit_during_external_snapshot (test_negative.TestReviewRegressions.test_verifier_retries_a_commit_during_external_snapshot) ... ok
 test_unusable_lock_rejects_execute_and_skips_only_that_attempt_in_recovery (test_negative.TestUnusableLockFile.test_unusable_lock_rejects_execute_and_skips_only_that_attempt_in_recovery) ... ok
 test_envelope_changing_between_reads_cannot_redirect_dispatch (test_negative.TestVerifiedGrantSnapshot.test_envelope_changing_between_reads_cannot_redirect_dispatch) ... ok
 test_grant_identity_must_match_registered_authority (test_negative.TestVerifiedGrantSnapshot.test_grant_identity_must_match_registered_authority) ... ok
 
 ----------------------------------------------------------------------
-Ran 34 tests in 4.019s
+Ran 49 tests in 2.258s
 
 OK
-(exit 0)
 
-## python3 acceptance_matrix.py
-
+COMMAND: /opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python acceptance_matrix.py
+EXIT: 0
 ACCOUNTABLE EXECUTION — falsifiable acceptance matrix (reference implementation)
 Under the explicit assumptions in README.md. Not a claim about a deployed system.
 
@@ -166,4 +185,5 @@ Under the explicit assumptions in README.md. Not a claim about a deployed system
   PASS  F1  [positive      ] authorized path -> exactly one real effect, correct binding, verifier clean                       — status=COMMITTED effects=1 invariants_all_ok=True
 
 38/38 acceptance rows pass.
-(exit 0)
+
+DEMO_CASES.json regeneration: exact match

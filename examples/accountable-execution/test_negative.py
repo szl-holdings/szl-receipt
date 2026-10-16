@@ -629,5 +629,187 @@ class TestMalformedEnvelopes(Base):
             self.assertEqual(out.status, "REJECTED", env)
 
 
+class TestReviewRegressions(Base):
+    def invariants(self):
+        return {i.name: i for i in gexec.independent_verify(
+            self.led, self.world, self.auth.pub, self.ep.public_key())}
+
+    def test_old_caller_timestamp_cannot_revive_expired_grant(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action, now=time.time() - 100, ttl_s=1)
+        old = json.loads(env["payload"])["issued_at"]
+        self.assertEqual(self.ex.execute(action, env, now=old).status, "REJECTED")
+        self.assertEqual(self.world.count(att), 0)
+
+    def test_future_dated_grant_is_not_yet_valid(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action, now=time.time() + 100)
+        self.assertEqual(self.ex.execute(action, env).status, "REJECTED")
+        self.assertEqual(self.world.count(att), 0)
+
+    def test_expiry_during_claim_prevents_dispatch(self):
+        from unittest.mock import patch
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        expiry = json.loads(env["payload"])["expires_at"]
+        real_claim = self.led.consume_nonce_and_claim
+        clock = [time.time()]
+        def claim(*args, **kwargs):
+            status = real_claim(*args, **kwargs)
+            clock[0] = expiry + 1
+            return status
+        with patch.object(self.led, "consume_nonce_and_claim", claim):
+            with patch.object(gexec.time, "time", lambda: clock[0]):
+                out = self.ex.execute(action, env)
+        self.assertEqual(out.status, "REJECTED")
+        self.assertEqual(self.world.count(att), 0)
+
+    def test_effect_must_use_authorized_idempotency_key(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        grant = json.loads(env["payload"])
+        _, effect = self.world.apply("foreign-key", att, grant["target"], gexec.canon(action))
+        self.led.record_receipt(att, self.ex._receipt(grant, effect, gexec.COMMITTED))
+        self.led.finalize(att, gexec.CLOSED, gexec.COMMITTED)
+        inv = self.invariants()
+        self.assertIs(inv["at_most_one_effect_per_attempt"].ok, False)
+        self.assertIs(inv["every_committed_receipt_backed_by_effect"].ok, False)
+
+    def test_expired_effect_without_dispatch_authorization_is_detected(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action, ttl_s=-1)
+        grant = json.loads(env["payload"])
+        _, effect = self.world.apply(att, att, grant["target"], gexec.canon(action))
+        self.led.record_receipt(att, self.ex._receipt(grant, effect, gexec.COMMITTED))
+        self.led.finalize(att, gexec.CLOSED, gexec.COMMITTED)
+        self.assertIs(self.invariants()["no_effect_without_committed_authority"].ok, False)
+
+    def test_late_dispatch_timestamp_is_detected(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        self.assertEqual(self.ex.execute(action, env).status, "COMMITTED")
+        c = self.led._conn()
+        c.execute("UPDATE authority SET dispatched_at=? WHERE attempt_id=?",
+                  (json.loads(env["payload"])["expires_at"] + 1, att))
+        c.commit(); c.close()
+        self.assertIs(self.invariants()["no_effect_without_committed_authority"].ok, False)
+
+    def test_malformed_stored_receipts_are_reported_not_raised(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        self.ex.execute(action, env)
+        for raw in ("not json", "[]", "null", "42"):
+            with self.subTest(raw=raw):
+                c = self.led._conn()
+                c.execute("UPDATE receipts SET envelope=? WHERE attempt_id=?", (raw, att))
+                c.commit(); c.close()
+                self.assertIs(self.invariants()["every_committed_receipt_backed_by_effect"].ok, False)
+
+    def test_malformed_stored_grants_are_reported_not_raised(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        for raw in ("not json", "[]", "null", "42"):
+            with self.subTest(raw=raw):
+                c = self.led._conn()
+                c.execute("UPDATE authority SET grant_env=? WHERE attempt_id=?", (raw, att))
+                c.commit(); c.close()
+                self.assertIs(self.invariants()["all_grants_authorizer_signed"].ok, False)
+
+    def test_stale_receipt_prevents_atomic_close(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        old = self.ex._receipt(json.loads(env["payload"]), "", gexec.KNOWN_NOT_DISPATCHED)
+        self.led.record_receipt(att, old)
+        out = self.ex.execute(action, env)
+        self.assertEqual(out.status, "UNKNOWN")
+        row = self.led.row(att)
+        self.assertEqual(row["state"], gexec.DISPATCH_AUTHORIZED)
+        self.assertIsNone(row["verdict"])
+        self.assertEqual(json.loads(self.led.all_receipts()[0]["envelope"]), old)
+
+    def test_signed_tenant_substitution_is_detected(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        self.ex.execute(action, env)
+        grant = json.loads(env["payload"])
+        grant["tenant"] = "tenant-B"
+        alternate = gexec.sign_envelope(grant, self.ap, gexec.GRANT_TYPE)
+        c = self.led._conn()
+        c.execute("UPDATE authority SET grant_env=? WHERE attempt_id=?", (json.dumps(alternate), att))
+        c.commit(); c.close()
+        inv = self.invariants()
+        self.assertIs(inv["grant_identity_bound_to_ledger"].ok, False)
+        self.assertIs(inv["every_receipt_consistent_with_ledger_and_grant"].ok, False)
+
+    def test_verification_during_live_effect_is_unresolved_not_tamper(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        observed = []
+        def inspect(point):
+            if point == "after_effect_before_receipt":
+                observed.extend(self.invariants().values())
+        self.assertEqual(self.ex.execute(action, env, crash_hook=inspect).status, "COMMITTED")
+        self.assertTrue(observed)
+        self.assertFalse(any(i.ok is False for i in observed), observed)
+        self.assertTrue(any(i.ok is None for i in observed), observed)
+        self.assertTrue(all(i.ok is True for i in self.invariants().values()))
+
+
+    def test_verifier_retries_a_commit_during_external_snapshot(self):
+        from unittest.mock import patch
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        real_all = self.world.all
+        calls = []
+        def read():
+            rows = real_all()
+            if not calls:
+                calls.append(True)
+                self.assertEqual(self.ex.execute(action, env).status, "COMMITTED")
+            return rows
+        with patch.object(self.world, "all", read):
+            self.assertTrue(all(i.ok is True for i in self.invariants().values()))
+
+    def test_verifier_reports_continuous_ledger_changes_as_unresolved(self):
+        from unittest.mock import patch
+        counter = [0]
+        def changing():
+            counter[0] += 1
+            return ([{"version": counter[0]}], [], [])
+        with patch.object(self.led, "verification_snapshot", changing):
+            inv = self.invariants()
+        self.assertIs(inv["verification_snapshot_stable"].ok, None)
+
+    def test_signed_non_mapping_payload_is_rejected(self):
+        for payload in ([], 42, "text"):
+            with self.subTest(payload=payload):
+                env = gexec.sign_envelope(payload, self.ap, gexec.GRANT_TYPE)
+                self.assertIsNone(gexec.verify_envelope(env, self.auth.pub, gexec.GRANT_TYPE))
+
+
+    def test_signed_malformed_grants_fail_closed_without_exceptions(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        original = json.loads(env["payload"])
+        cases = [(field, value) for field in ("proposal_id", "target", "tenant",
+                 "policy_revision", "allowance_id", "attempt_id", "nonce")
+                 for value in ([], "", 42)]
+        cases += [("action_digest", "invalid"), ("expires_at", 10**1000),
+                  ("issued_at", float("nan")), ("expires_at", float("inf")),
+                  ("issued_at", True)]
+        for field, value in cases:
+            with self.subTest(field=field, value=repr(value)[:50]):
+                payload = dict(original, **{field: value})
+                malformed = gexec.sign_envelope(payload, self.ap, gexec.GRANT_TYPE)
+                self.assertEqual(self.ex.execute(action, malformed).status, "REJECTED")
+                self.assertEqual(self.world.count(att), 0)
+                c = self.led._conn()
+                c.execute("UPDATE authority SET grant_env=? WHERE attempt_id=?",
+                          (json.dumps(malformed), att))
+                c.commit(); c.close()
+                self.assertIs(self.invariants()["all_grants_authorizer_signed"].ok, False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

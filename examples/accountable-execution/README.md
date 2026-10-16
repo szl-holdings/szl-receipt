@@ -7,7 +7,7 @@ not an unconditional guarantee.**
 
 ```
 python3 prove.py                       # property suite (happy path + adversaries), 49 checks
-python3 -m unittest test_negative -v   # independent negative/adversarial tests, 34 cases
+python3 -m unittest test_negative -v   # independent negative/adversarial tests, 49 cases
 python3 acceptance_matrix.py           # A–F acceptance matrix (38 named rows)
 python3 acceptance_matrix.py --json    # same, regenerating DEMO_CASES.json
 ```
@@ -38,6 +38,35 @@ Policy (grant) → governed executor → external effect → receipt → indepen
 `test_negative.py` runs the adversarial cases as standalone `unittest` cases,
 independent of the `prove.py` harness, so the negative controls can be run and reviewed
 on their own.
+
+## Execution and verification review fixes
+
+Execution expiry uses the local clock even if a caller supplies the legacy `now`
+argument, and checks the validity window again after obtaining the ledger write lock
+for dispatch. The verifier requires a dispatch timestamp inside the signed grant's
+validity window. The ledger is a trusted record of dispatch authorization; an attacker
+who can rewrite both that timestamp and the authority record is outside this timing
+claim. Real clock skew and rollback still require production qualification.
+
+The provider's actual idempotency key must equal the authorized attempt ID. Tenant
+and policy identity are stored independently of the grant envelope, and receipts bind
+the tenant as well. Existing demo ledger rows lacking these identity columns retain
+unknown values and fail closed; they must be re-issued into a fresh demo ledger.
+Receipt uniqueness conflicts roll back the entire close transaction and return an
+unknown outcome rather than claiming a receipt was persisted.
+
+Stored malformed envelopes produce failed invariants. Online verification reads one
+consistent ledger snapshot on each side of an external-state read, retrying changes
+up to three times. An active attempt or continuously changing ledger returns
+`Invariant.ok = None` (unresolved), distinct from `False` (a violation) and `True`
+(verified). Consumers must require every invariant to be exactly `True` for success;
+unresolved observations need a later retry or recovery. This avoids certifying an
+in-flight effect while also avoiding a false tamper report during normal execution.
+
+The 15 `TestReviewRegressions` cases cover these boundaries, including an execution
+that commits during verification. These remain host-local reference checks, not
+production guarantees. The original 11 reproductions failed against head `a450f10`
+(nine failures and two parse errors) before the fixes; RESULTS.txt records the rerun.
 
 ## The A–F acceptance matrix
 
@@ -208,7 +237,8 @@ re-derived.
 
 - **Does:** demonstrate, reproducibly, that the modelled chain upholds the six
   properties under the stated threat model, with durable state and external
-  idempotency, on any machine in under a second.
+  idempotency. Measured timings and environment are recorded in RESULTS.txt;
+  runtime varies by environment.
 - **Does not:** establish anything about a deployed system. The production a11oy
   authorization boundary is `IMPLEMENTED NOT DEPLOYED` (105 receipted policy assertions
   pass; it is not wired to the served path). Here, SQLite stands in for both the
@@ -229,3 +259,4 @@ Until those are done, this is a tested reference implementation — nothing more
 nothing dressed up as more.
 
 *Readiness is not evidence. Control before action; evidence after.*
+

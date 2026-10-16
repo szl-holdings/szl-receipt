@@ -15,6 +15,7 @@ Python stdlib + `cryptography` only.
 from __future__ import annotations
 
 import json
+import math
 import hashlib
 import os
 import sqlite3
@@ -74,7 +75,7 @@ def verify_envelope(env: dict, trusted_pub: Ed25519PublicKey, payload_type: str)
         if env.get("payloadType") != payload_type:
             return None
         body = env["payload"].encode()
-        if json.loads(body) is None:
+        if not isinstance(json.loads(body), dict):
             return None
         # bind the signed bytes to the canonical form (no body-swap under a valid sig)
         if canon(json.loads(body)) != body:
@@ -181,8 +182,12 @@ def verify_grant(grant_env: dict, authorizer_pub: Ed25519PublicKey,
         g = Grant(**payload)
     except TypeError:
         return Check(False, "grant-malformed")
+    if not valid_grant_shape(payload):
+        return Check(False, "grant-malformed")
     if now > g.expires_at:
         return Check(False, "grant-expired")
+    if now < g.issued_at:
+        return Check(False, "grant-not-yet-valid")
     # bind to the EXACT action being executed — catches a swapped/altered request
     digest = sha256_hex(action_bytes) if action_bytes is not None else action_digest(action)
     if digest != g.action_digest:
@@ -190,6 +195,58 @@ def verify_grant(grant_env: dict, authorizer_pub: Ed25519PublicKey,
     if expected_tenant is not None and g.tenant != expected_tenant:
         return Check(False, "wrong-tenant")
     return Check(True, grant=g, envelope=snapshot)
+
+
+def finite_number(value) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def valid_grant_shape(payload: dict) -> bool:
+    try:
+        grant = Grant(**payload)
+    except (TypeError, ValueError):
+        return False
+    fields = (grant.proposal_id, grant.action_digest, grant.target, grant.tenant,
+              grant.policy_revision, grant.allowance_id, grant.attempt_id, grant.nonce)
+    return (all(isinstance(value, str) and value for value in fields)
+            and len(grant.action_digest) == 64
+            and all(c in "0123456789abcdef" for c in grant.action_digest)
+            and finite_number(grant.issued_at) and finite_number(grant.expires_at))
+
+
+def stored_grant(raw, authorizer_pub) -> Optional[dict]:
+    payload = verify_envelope(stored_envelope(raw), authorizer_pub, GRANT_TYPE)
+    return payload if payload is not None and valid_grant_shape(payload) else None
+
+
+def valid_window(grant: dict) -> bool:
+    """Only finite numeric, ordered grant timestamps define an authority window."""
+    values = (grant.get("issued_at"), grant.get("expires_at"))
+    return (all(finite_number(v) for v in values)
+            and values[0] <= values[1])
+
+
+def dispatch_in_window(row: dict, grant: dict) -> bool:
+    stamp = row.get("dispatched_at")
+    return (valid_window(grant) and finite_number(stamp)
+            and grant["issued_at"] <= stamp <= grant["expires_at"])
+
+
+def grant_bound_to_row(grant: dict, row: dict) -> bool:
+    return all(grant.get(k) == row.get(k) for k in (
+        "attempt_id", "action_digest", "target", "allowance_id", "tenant", "policy_revision"))
+
+
+def stored_envelope(raw):
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------- durable stores
@@ -303,8 +360,15 @@ class AuthorityLedger:
             "CREATE TABLE IF NOT EXISTS authority("
             "attempt_id TEXT PRIMARY KEY, allowance_id TEXT, action_digest TEXT, "
             "target TEXT, state TEXT, verdict TEXT, grant_env TEXT, "
-            "created_at REAL, claimed_at REAL, dispatched_at REAL, closed_at REAL)"
+            "created_at REAL, claimed_at REAL, dispatched_at REAL, closed_at REAL, "
+            "tenant TEXT, policy_revision TEXT)"
         )
+        # Existing demo ledgers retain unknown identities rather than deriving trust
+        # from replaceable envelope bytes. Such rows fail closed and need re-issuance.
+        columns = {r[1] for r in c.execute("PRAGMA table_info(authority)")}
+        for field in ("tenant", "policy_revision"):
+            if field not in columns:
+                c.execute(f"ALTER TABLE authority ADD COLUMN {field} TEXT")
         c.execute("CREATE TABLE IF NOT EXISTS seen_nonce(nonce TEXT PRIMARY KEY, attempt_id TEXT)")
         c.execute(
             "CREATE TABLE IF NOT EXISTS receipts("
@@ -325,9 +389,9 @@ class AuthorityLedger:
         try:
             c.execute(
                 "INSERT OR IGNORE INTO authority(attempt_id, allowance_id, action_digest, "
-                "target, state, grant_env, created_at) VALUES(?,?,?,?,?,?,?)",
+                "target, state, grant_env, created_at, tenant, policy_revision) VALUES(?,?,?,?,?,?,?,?,?)",
                 (g["attempt_id"], g["allowance_id"], g["action_digest"], g["target"],
-                 AVAILABLE, json.dumps(grant_env), time.time()),
+                 AVAILABLE, json.dumps(grant_env), time.time(), g["tenant"], g["policy_revision"]),
             )
             c.commit()
         finally:
@@ -361,23 +425,15 @@ class AuthorityLedger:
                 c.execute("ROLLBACK")
                 return "replay"
             row = c.execute(
-                "SELECT state, action_digest, target, allowance_id, grant_env FROM authority "
+                "SELECT * FROM authority "
                 "WHERE attempt_id=?", (attempt_id,),
             ).fetchone()
             if row is None or row["state"] != AVAILABLE:
                 c.execute("ROLLBACK")   # also un-burns this caller's nonce attempt
                 return "not-claimable"
-            if grant is not None:
-                try:   # the registered grant is the authority row's own record
-                    registered = json.loads(json.loads(row["grant_env"])["payload"])
-                except (TypeError, ValueError, KeyError):
-                    registered = {}
-                if ((grant.action_digest, grant.target, grant.allowance_id,
-                     grant.tenant, grant.policy_revision)
-                        != (row["action_digest"], row["target"], row["allowance_id"],
-                            registered.get("tenant"), registered.get("policy_revision"))):
-                    c.execute("ROLLBACK")
-                    return "grant-authority-mismatch"
+            if grant is not None and not grant_bound_to_row(grant.body(), dict(row)):
+                c.execute("ROLLBACK")
+                return "grant-authority-mismatch"
             stored_env = None if grant_env is None else json.dumps(grant_env)
             c.execute(
                 "UPDATE authority SET state=?, claimed_at=?, grant_env=COALESCE(?, grant_env) "
@@ -396,15 +452,20 @@ class AuthorityLedger:
         finally:
             c.close()
 
-    def mark_dispatch_authorized(self, attempt_id: str) -> bool:
+    def mark_dispatch_authorized(self, attempt_id: str, grant: Grant) -> bool:
         """Compare-and-swap CLAIMED -> DISPATCH_AUTHORIZED. Returns False if the
         attempt is no longer CLAIMED (e.g. closed out of band); the executor must then
         not dispatch."""
         c = self._conn()
         try:
+            c.execute("BEGIN IMMEDIATE")
+            stamp = time.time()  # evaluate AFTER waiting for the database writer lock
+            if not grant.issued_at <= stamp <= grant.expires_at:
+                c.rollback()
+                return False
             cur = c.execute(
                 "UPDATE authority SET state=?, dispatched_at=? WHERE attempt_id=? AND state=?",
-                (DISPATCH_AUTHORIZED, time.time(), attempt_id, CLAIMED),
+                (DISPATCH_AUTHORIZED, stamp, attempt_id, CLAIMED),
             )
             c.commit()
             return cur.rowcount == 1
@@ -463,8 +524,12 @@ class AuthorityLedger:
             if cur.rowcount != 1:
                 c.execute("ROLLBACK")
                 return False
-            c.execute("INSERT OR IGNORE INTO receipts VALUES(?,?,?)",
-                      (attempt_id, json.dumps(env), time.time()))
+            try:
+                c.execute("INSERT INTO receipts VALUES(?,?,?)",
+                          (attempt_id, json.dumps(env), time.time()))
+            except sqlite3.IntegrityError:
+                c.execute("ROLLBACK")
+                return False
             c.execute("COMMIT")
             return True
         finally:
@@ -494,6 +559,16 @@ class AuthorityLedger:
         c = self._conn()
         try:
             return [dict(r) for r in c.execute(q, states).fetchall()]
+        finally:
+            c.close()
+
+    def verification_snapshot(self) -> tuple[list[dict], list[dict], list[dict]]:
+        """Read authority, receipts and nonce consumption in one SQLite snapshot."""
+        c = self._conn()
+        try:
+            c.execute("BEGIN")
+            return tuple([dict(r) for r in c.execute(f"SELECT * FROM {table}")]
+                         for table in ("authority", "receipts", "seen_nonce"))
         finally:
             c.close()
 
@@ -540,6 +615,7 @@ class GovernedExecutor:
             "attempt_id": grant["attempt_id"],
             "action_digest": grant["action_digest"],
             "target": grant["target"],
+            "tenant": grant["tenant"],
             "allowance_id": grant["allowance_id"],
             "policy_revision": grant["policy_revision"],
             "effect_id": effect_id,
@@ -557,7 +633,8 @@ class GovernedExecutor:
         e = self.world.get(aid)
         if e is None:
             return "effect-missing"
-        if e["target"] != grant["target"] or e["payload_sha256"] != grant["action_digest"]:
+        if (e["idempotency_key"] != aid or e["attempt_id"] != aid
+                or e["target"] != grant["target"] or e["payload_sha256"] != grant["action_digest"]):
             return "idempotency-key-conflict"
         return None
 
@@ -633,7 +710,9 @@ class GovernedExecutor:
         # 1. INDEPENDENT authority check over a once-read snapshot of the envelope.
         #    From here on only the frozen verified grant is used; `grant_env` is never
         #    read again, so it cannot supply an unverified target or identity.
-        chk = verify_grant(grant_env, self.authorizer_pub, now=now,
+        # The legacy `now` request argument is deliberately ignored: execution
+        # authority always uses the local trusted clock, including after lock waits.
+        chk = verify_grant(grant_env, self.authorizer_pub,
                            expected_tenant=expected_tenant, action_bytes=action_bytes)
         if not chk.ok:
             return Outcome("REJECTED", chk.reason)          # zero effect
@@ -653,7 +732,8 @@ class GovernedExecutor:
                 return Outcome("REJECTED", "attempt-lock-unavailable")
 
             # Waiting for the lock takes time: re-check expiry at admission.
-            if (time.time() if now is None else now) > verified.expires_at:
+            stamp = time.time()
+            if not verified.issued_at <= stamp <= verified.expires_at:
                 return Outcome("REJECTED", "grant-expired")
 
             # 2+3. atomic single-use: consume the nonce AND claim in ONE transaction,
@@ -670,7 +750,7 @@ class GovernedExecutor:
 
             # 4. durably record intent-to-dispatch BEFORE touching the external world
             #    (CAS: if the attempt was closed out of band, do not dispatch).
-            if not self.ledger.mark_dispatch_authorized(aid):
+            if not self.ledger.mark_dispatch_authorized(aid, verified):
                 return Outcome("REJECTED", "fenced-before-dispatch")
             crash("after_dispatch_authorized")
 
@@ -733,12 +813,8 @@ class GovernedExecutor:
                 row = self.ledger.row(aid)        # re-read under the lock
                 if row is None or row["state"] not in open_states:
                     continue
-                try:
-                    stored = verify_envelope(json.loads(row["grant_env"]),
-                                             self.authorizer_pub, GRANT_TYPE)
-                except (TypeError, ValueError):
-                    stored = None
-                if stored is None:
+                stored = stored_grant(row["grant_env"], self.authorizer_pub)
+                if stored is None or not grant_bound_to_row(stored, row):
                     self.last_recovery_skipped.append((aid, "stored-grant-unverifiable"))
                     continue                      # left for the independent verifier
                 effect = self.world.get(aid)
@@ -747,9 +823,13 @@ class GovernedExecutor:
                                             expected_states=open_states):
                         resolved.append((aid, KNOWN_NOT_DISPATCHED))
                     continue
+                if not dispatch_in_window(row, stored):
+                    self.last_recovery_skipped.append((aid, "invalid-dispatch-authorization"))
+                    continue
                 # reconcile the real effect's content against the signed grant before
                 # claiming success — never promote a mismatched effect to COMMITTED.
-                if (effect["target"] != stored["target"]
+                if (effect["idempotency_key"] != aid or effect["attempt_id"] != aid
+                        or effect["target"] != stored["target"]
                         or effect["payload_sha256"] != stored["action_digest"]):
                     if self.ledger.finalize(aid, CLOSED, EFFECT_CONFLICT,
                                             expected_states=open_states):
@@ -765,7 +845,7 @@ class GovernedExecutor:
 @dataclass
 class Invariant:
     name: str
-    ok: bool
+    ok: Optional[bool]   # True=verified, False=violation, None=unresolved/in-flight
     detail: str = ""
 
 
@@ -775,22 +855,48 @@ def independent_verify(ledger: AuthorityLedger, world: ExternalWorld,
     """Zero-trust reconciliation: read the external world + the signed receipts +
     the authority ledger and check they agree. Does not trust the executor."""
     inv: list[Invariant] = []
-    effects = {e["attempt_id"]: e for e in world.all()}
-    effects_list = world.all()
-    authority = {a["attempt_id"]: a for a in ledger.all_authority()}
-    receipts = {r["attempt_id"]: json.loads(r["envelope"]) for r in ledger.all_receipts()}
+    # Bracket the external read with consistent ledger snapshots. A completed row
+    # guarantees its effect was already committed; a changing ledger is retried.
+    # No claim of atomicity across the two stores is made.
+    for _ in range(3):
+        before = ledger.verification_snapshot()
+        effects_list = world.all()
+        after = ledger.verification_snapshot()
+        if before == after:
+            break
+    else:
+        return [Invariant("verification_snapshot_stable", None,
+                          "unresolved: ledger changed during verification; retry")]
+    rows, receipt_rows, nonces = after
+    authority = {a["attempt_id"]: a for a in rows}
+    effects = {e["idempotency_key"]: e for e in effects_list}
+    receipts = {r["attempt_id"]: stored_envelope(r["envelope"]) for r in receipt_rows}
+    grants = {aid: stored_grant(a["grant_env"], authorizer_pub)
+              for aid, a in authority.items()}
 
-    # I1: at most one external effect per attempt (unique key); counts reconcile
-    per_attempt_ok = len(effects_list) == len(effects)
-    inv.append(Invariant("at_most_one_effect_per_attempt", per_attempt_ok,
-                         f"{len(effects_list)} effects / {len(effects)} distinct attempts"))
+    # I1: the actual provider key must be the authorized attempt, not just metadata.
+    attempts = {e["attempt_id"] for e in effects_list}
+    key_ok = all(e["idempotency_key"] == e["attempt_id"] for e in effects_list)
+    inv.append(Invariant("at_most_one_effect_per_attempt",
+                         key_ok and len(effects_list) == len(attempts),
+                         f"{len(effects_list)} effects / {len(attempts)} distinct attempts; key_binding={key_ok}"))
 
-    # I2: every effect traces to an authorized attempt whose verdict is COMMITTED
-    bad = [e["attempt_id"] for e in effects_list
-           if e["attempt_id"] not in authority
-           or authority[e["attempt_id"]].get("verdict") != COMMITTED]
-    inv.append(Invariant("no_effect_without_committed_authority", not bad,
-                         f"unauthorized effects: {bad}"))
+    # I2: closed effects require committed authority and a valid dispatch window.
+    # A legitimate effect can precede its receipt: report unresolved, never tamper
+    # and never verified success, until dispatch/recovery closes the attempt.
+    bad = []
+    pending = [aid for aid, a in authority.items()
+               if a["state"] in (CLAIMED, DISPATCH_AUTHORIZED)]
+    for e in effects_list:
+        aid = e["idempotency_key"]
+        a, g = authority.get(aid), grants.get(aid)
+        if (a is None or g is None or e["attempt_id"] != aid
+                or not grant_bound_to_row(g, a) or not dispatch_in_window(a, g)
+                or (a["state"] != DISPATCH_AUTHORIZED and a.get("verdict") != COMMITTED)):
+            bad.append(aid)
+    inv.append(Invariant("no_effect_without_committed_authority",
+                         False if bad else (None if pending else True),
+                         f"unauthorized effects: {bad}; unresolved attempts: {pending}"))
 
     # I3: no effect exists for a rejected / never-claimed / KNOWN_NOT_DISPATCHED attempt
     leaked = []
@@ -821,17 +927,13 @@ def independent_verify(ledger: AuthorityLedger, world: ExternalWorld,
                          f"bad receipts: {bad_receipts}"))
 
     # I5: every stored grant signature verifies under the authorizer key
-    bad_grants = []
-    for aid, a in authority.items():
-        env = json.loads(a["grant_env"])
-        if verify_envelope(env, authorizer_pub, GRANT_TYPE) is None:
-            bad_grants.append(aid)
+    bad_grants = [aid for aid, g in grants.items() if g is None]
     inv.append(Invariant("all_grants_authorizer_signed", not bad_grants,
                          f"bad grants: {bad_grants}"))
 
     # I6: no attempt is left AVAILABLE while its single-use nonce is already consumed.
     #     The atomic nonce+claim makes this state unreachable; the verifier checks it.
-    stranded = [n["attempt_id"] for n in ledger.all_nonces()
+    stranded = [n["attempt_id"] for n in nonces
                 if n["attempt_id"] in authority
                 and authority[n["attempt_id"]]["state"] == AVAILABLE]
     inv.append(Invariant("no_consumed_nonce_with_available_attempt", not stranded,
@@ -839,15 +941,8 @@ def independent_verify(ledger: AuthorityLedger, world: ExternalWorld,
 
     # I7: every stored grant's SIGNED identity matches the authority row it governs
     #     (a signature check alone does not bind the grant to this ledger row).
-    grants, unbound = {}, []
-    for aid, a in authority.items():
-        g = verify_envelope(json.loads(a["grant_env"]), authorizer_pub, GRANT_TYPE)
-        if g is None:
-            continue                                  # reported by I5
-        grants[aid] = g
-        if (g.get("attempt_id"), g.get("action_digest"), g.get("target"),
-                g.get("allowance_id")) != (aid, a["action_digest"], a["target"], a["allowance_id"]):
-            unbound.append(aid)
+    unbound = [aid for aid, g in grants.items()
+               if g is not None and not grant_bound_to_row(g, authority[aid])]
     inv.append(Invariant("grant_identity_bound_to_ledger", not unbound,
                          f"unbound grants: {unbound}"))
 
@@ -867,7 +962,7 @@ def independent_verify(ledger: AuthorityLedger, world: ExternalWorld,
             inconsistent.append((aid, "receipt-without-verified-authority"))
             continue
         if any(p.get(k) != g.get(k) for k in ("action_digest", "target", "allowance_id",
-                                               "policy_revision")):
+                                               "policy_revision", "tenant")):
             inconsistent.append((aid, "receipt-disagrees-with-signed-grant"))
             continue
         verdict = p.get("verdict")
@@ -897,3 +992,4 @@ def independent_verify(ledger: AuthorityLedger, world: ExternalWorld,
                          f"committed without receipt: {unreceipted}"))
 
     return inv
+
