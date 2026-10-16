@@ -32,7 +32,7 @@ for this PR and appears nowhere below as achieved.
 | 2 | One review card per asset | `SOURCE_REVIEWED` (partial, elsewhere) | Key assets reviewed at pinned heads in-session; a full per-asset card set is not part of this PR. |
 | 3 | Consolidated resume / supersession | `SOURCE_REVIEWED` (partial, elsewhere) | Surviving lanes and holds tracked in-session; not re-asserted here. |
 | 4 | Minimal reviewed diff + threat model + state machine + external-effect assumptions | `TESTS_REPRODUCED` | `gexec.py` (the chain), `README.md` (threat model, state machine, two-store boundary). A reference implementation in a new example dir — **not** a patch into the served runtime. |
-| 5 | Reproducible local demo + separate verifier, durable state, adversarial, concurrency, crash injection | `TESTS_REPRODUCED` | `prove.py` (49 checks), `test_negative.py` (49 unittests), `acceptance_matrix.py` (38 rows), `independent_verify()` as the separate verifier. Durable SQLite stores; real subprocess hard-crashes; N-thread races. Round-3 review findings (action snapshot, effect-identity reconciliation, atomic nonce+claim) and round-4 findings (verified-grant snapshot, receipt semantics for every verdict, execution/recovery fencing, distinct-nonce contention) fixed and regression-covered, as are round-5 findings (direct claim-CAS race, ledger-alias fencing, atomic close+receipt, admission timing, unusable locks, malformed envelopes, tenant/policy binding). |
+| 5 | Reproducible local demo + separate verifier, durable state, adversarial, concurrency, crash injection | `TESTS_REPRODUCED` | `prove.py` (49 checks), `test_negative.py` (53 unittests), `acceptance_matrix.py` (38 rows), `independent_verify()` as the separate verifier. Durable SQLite stores; real subprocess hard-crashes; N-thread races. Round-3 review findings (action snapshot, effect-identity reconciliation, atomic nonce+claim) and round-4 findings (verified-grant snapshot, receipt semantics for every verdict, execution/recovery fencing, distinct-nonce contention) fixed and regression-covered, as are round-5 findings (direct claim-CAS race, ledger-alias fencing, atomic close+receipt, admission timing, unusable locks, malformed envelopes, tenant/policy binding). |
 | 6 | Honest demonstration narrative + evidence package (claim → source → test → observation → limitation) | `TESTS_REPRODUCED` | This report + `README.md` + `RESULTS.txt`. No fabricated pass, signature, or live label; the chain is shown below. |
 | 7 | Prior-work comparison + preregistered cost/reliability plan | comparison `SOURCE_REVIEWED`; cost eval `NOT_RUN` (pre-registered) | `MEASUREMENT_PLAN.md`. The comparison cites named prior art; the cost/reliability numbers are **registered before** any run, not reported. |
 | 8 | Smallest remaining approval requests | enumerated below | Each names action, target, cost and stopping condition. None bundled. |
@@ -76,11 +76,11 @@ bindings; and all of `positive-deployed`. Zero observed failures in the covered 
   two-store ordering). The production boundary it models is a11oy's policy runtime,
   `IMPLEMENTED NOT DEPLOYED` — committed report read (`TESTS_REPORTED`), not rerun, and
   not wired to the served path.
-- **Test.** `python3 prove.py` (49), `python3 -m unittest test_negative -v` (49),
+- **Test.** `python3 prove.py` (49), `python3 -m unittest test_negative -v` (53),
   `python3 acceptance_matrix.py` (38). Durable stores, real subprocess crashes, thread
   races.
 - **Observation.** `RESULTS.txt` — exact commands and raw output, no secrets. Counts are
-  reported per suite and **never summed** across suites (49, 49, and 38 are distinct
+  reported per suite and **never summed** across suites (49, 53, and 38 are distinct
   experiments, never added together). Of prove.py's 49, three are invariants added to
   Property 4's existing estate, not new independently varied scenarios.
 - **Limitation.** SQLite stands in for both the durable store and the external service's
