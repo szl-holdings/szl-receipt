@@ -63,14 +63,14 @@ Property 5 — action snapshot, effect-identity reconciliation, atomic nonce+cla
 
 Property 6 — verified-grant snapshot, claim CAS, recovery fencing, receipt semantics
   [PASS] grant payload changed after verification -> only the signed target dispatched  — dispatched=svc://pay/charge
-  [PASS] 16 distinct signed nonces on one attempt -> claim CAS admits exactly 1  — commits=1 effects=1
+  [PASS] claim CAS raced directly by 16 distinct signed nonces -> exactly 1 winner  — ok=1 not_claimable=15
   [PASS] recovery overlapping a live dispatch + lost response -> skipped, then COMMITTED  — during=None after=COMMITTED effects=1
   [PASS] attempt closed out of band after claim -> dispatch fenced, 0 effects  — fenced-before-dispatch
   [PASS] detects a receipt that disagrees with the signed grant
   [PASS] detects a signed non-COMMITTED receipt contradicting the ledger/effect
 
 ========================================================================
-49/49 checks passed in 2.11s
+49/49 checks passed in 1.75s
 ALL CHECKS PASSED — properties hold in this reference implementation,
 under the explicit assumptions in README.md. Not a claim about any
 deployed system; see 'What this does and does not establish'.
@@ -80,11 +80,16 @@ deployed system; see 'What this does and does not establish'.
 ## python3 -m unittest test_negative -v
 
 test_action_mutation_after_validation_dispatches_the_snapshot (test_negative.TestActionSnapshot.test_action_mutation_after_validation_dispatches_the_snapshot) ... ok
+test_grant_expiring_while_waiting_for_the_lock_is_rejected (test_negative.TestAdmissionTiming.test_grant_expiring_while_waiting_for_the_lock_is_rejected) ... ok
+test_replay_is_rejected_without_waiting_for_an_in_flight_dispatch (test_negative.TestAdmissionTiming.test_replay_is_rejected_without_waiting_for_an_in_flight_dispatch) ... ok
 test_crash_after_claim_never_strands_an_available_attempt (test_negative.TestAtomicNonceClaim.test_crash_after_claim_never_strands_an_available_attempt) ... ok
 test_expired_grant_is_rejected_with_zero_effects (test_negative.TestAuthorityExactAndSingleUse.test_expired_grant_is_rejected_with_zero_effects) ... ok
 test_forged_grant_signature_is_rejected (test_negative.TestAuthorityExactAndSingleUse.test_forged_grant_signature_is_rejected) ... ok
 test_replay_produces_no_second_effect (test_negative.TestAuthorityExactAndSingleUse.test_replay_produces_no_second_effect) ... ok
 test_wrong_digest_is_rejected_with_zero_effects (test_negative.TestAuthorityExactAndSingleUse.test_wrong_digest_is_rejected_with_zero_effects) ... ok
+test_other_policy_revision_cannot_claim (test_negative.TestClaimBindsTenantAndPolicy.test_other_policy_revision_cannot_claim) ... ok
+test_other_tenant_cannot_claim (test_negative.TestClaimBindsTenantAndPolicy.test_other_tenant_cannot_claim) ... ok
+test_exactly_one_contender_wins_the_raw_claim (test_negative.TestClaimCasRacedDirectly.test_exactly_one_contender_wins_the_raw_claim) ... ok
 test_concurrent_attempts_produce_at_most_one_effect (test_negative.TestConcurrency.test_concurrent_attempts_produce_at_most_one_effect)
 Same grant and same nonce from every contender: replay/claim contention. ... ok
 test_crash_after_effect_commits_exactly_once (test_negative.TestCrashNeverFakesSuccess.test_crash_after_effect_commits_exactly_once) ... ok
@@ -97,14 +102,21 @@ test_recovery_overlapping_live_claim_is_skipped (test_negative.TestExecutionReco
 test_recovery_overlapping_live_dispatch_does_not_lose_a_committed_effect (test_negative.TestExecutionRecoveryFencing.test_recovery_overlapping_live_dispatch_does_not_lose_a_committed_effect) ... ok
 test_forged_effect_without_authority_is_detected (test_negative.TestIndependentVerifierDetectsTampering.test_forged_effect_without_authority_is_detected) ... ok
 test_tampered_receipt_is_detected (test_negative.TestIndependentVerifierDetectsTampering.test_tampered_receipt_is_detected) ... ok
+test_hard_linked_ledger_fails_closed (test_negative.TestLockAliasing.test_hard_linked_ledger_fails_closed) ... ok
+test_recovery_in_another_process_via_alias_path_is_fenced (test_negative.TestLockAliasing.test_recovery_in_another_process_via_alias_path_is_fenced) ... ok
+test_symlink_from_another_directory_shares_the_dispatch_lock (test_negative.TestLockAliasing.test_symlink_from_another_directory_shares_the_dispatch_lock) ... ok
+test_symlinked_ledger_path_shares_the_dispatch_lock (test_negative.TestLockAliasing.test_symlinked_ledger_path_shares_the_dispatch_lock) ... ok
+test_malformed_envelopes_are_rejected_not_raised (test_negative.TestMalformedEnvelopes.test_malformed_envelopes_are_rejected_not_raised) ... ok
+test_late_out_of_band_close_never_yields_a_contradictory_receipt (test_negative.TestOutOfBandCloseAfterDispatchAuthorized.test_late_out_of_band_close_never_yields_a_contradictory_receipt) ... ok
 test_receipt_identity_swap_is_detected (test_negative.TestReceiptSemantics.test_receipt_identity_swap_is_detected) ... ok
 test_signed_grant_and_receipt_target_disagreement_is_detected (test_negative.TestReceiptSemantics.test_signed_grant_and_receipt_target_disagreement_is_detected) ... ok
 test_signed_non_committed_receipt_mismatch_is_detected (test_negative.TestReceiptSemantics.test_signed_non_committed_receipt_mismatch_is_detected) ... ok
+test_unusable_lock_rejects_execute_and_skips_only_that_attempt_in_recovery (test_negative.TestUnusableLockFile.test_unusable_lock_rejects_execute_and_skips_only_that_attempt_in_recovery) ... ok
 test_envelope_changing_between_reads_cannot_redirect_dispatch (test_negative.TestVerifiedGrantSnapshot.test_envelope_changing_between_reads_cannot_redirect_dispatch) ... ok
 test_grant_identity_must_match_registered_authority (test_negative.TestVerifiedGrantSnapshot.test_grant_identity_must_match_registered_authority) ... ok
 
 ----------------------------------------------------------------------
-Ran 22 tests in 1.984s
+Ran 34 tests in 4.019s
 
 OK
 (exit 0)
@@ -123,10 +135,15 @@ Under the explicit assumptions in README.md. Not a claim about a deployed system
   PASS  A7  [authority     ] action mutated after validation -> snapshot dispatched, not the mutation                          — status=COMMITTED effect==authorized=True mutated=True
   PASS  A8  [authority     ] grant payload changes after verification -> only the signed target is dispatched                  — status=COMMITTED dispatched_target=svc://pay
   PASS  A9  [authority     ] signed grant disagrees with registered authority row -> deny, 0 effects                           — grant-authority-mismatch; effects=0
+  PASS  A10 [authority     ] grant expires while waiting for the dispatch lock -> deny, 0 effects                              — grant-expired; effects=0
+  PASS  A11 [authority     ] signed grant for another tenant/policy than the registered row -> deny                            — grant-authority-mismatch; effects=0
+  PASS  A12 [authority     ] replay during an in-flight dispatch -> rejected without waiting                                   — replay-nonce; waited_under_2s=True effects=1
+  PASS  A13 [authority     ] malformed grant envelopes -> rejected, never an exception                                         — statuses=['REJECTED', 'REJECTED', 'REJECTED']
   PASS  B1  [at-most-once  ] N concurrent identical requests (same grant+nonce) -> exactly 1 effect; losers truthful           — commits=1 effects=1 losers_truthful=True
   PASS  B2  [at-most-once  ] different payloads, same idempotency key -> exactly 1 effect                                      — created=(True,False) effects=1
   PASS  B3  [at-most-once  ] existing key, different target/payload -> not COMMITTED (conflict)                                — status=REJECTED reason=idempotency-key-conflict verdict=EFFECT_CONFLICT
-  PASS  B4  [at-most-once  ] 16 distinct signed nonces, one attempt -> claim CAS admits exactly 1                              — nonces=16 commits=1 losers_not_claimable=True effects=1
+  PASS  B4  [at-most-once  ] 16 distinct signed nonces via execute() (lock + CAS) -> exactly 1 effect                          — nonces=16 commits=1 losers_not_claimable=True effects=1
+  PASS  B5  [at-most-once  ] claim CAS raced directly (no lock), 16 distinct nonces -> exactly 1 winner                        — ok=1 not_claimable=15
   PASS  C1  [crash         ] hard crash @ after_claim -> never a false success; resolved by external readback                  — crashed=True verdict=KNOWN_NOT_DISPATCHED effects=0 no_false_success=True
   PASS  C2  [crash         ] hard crash @ after_dispatch_authorized -> never a false success; resolved by external readback    — crashed=True verdict=KNOWN_NOT_DISPATCHED effects=0 no_false_success=True
   PASS  C3  [crash         ] hard crash @ after_effect_before_receipt -> never a false success; resolved by external readback  — crashed=True verdict=COMMITTED effects=1 no_false_success=True
@@ -134,6 +151,9 @@ Under the explicit assumptions in README.md. Not a claim about a deployed system
   PASS  C5  [crash         ] crash after atomic nonce+claim -> CLAIMED & recoverable, never stranded AVAILABLE                 — crashed=True state=CLAIMED no_stranded=True verdict=KNOWN_NOT_DISPATCHED
   PASS  C6  [crash         ] recovery overlaps live dispatch + lost response -> skipped, then COMMITTED by readback            — during=None exec=UNKNOWN after=COMMITTED final=COMMITTED effects=1
   PASS  C7  [crash         ] attempt closed out of band after claim -> dispatch fenced, 0 effects                              — fenced-before-dispatch; effects=0
+  PASS  C8  [crash         ] recovery via a symlinked ledger path overlapping a live dispatch -> skipped, then COMMITTED       — during=None after=COMMITTED effects=1
+  PASS  C9  [crash         ] out-of-band close after dispatch authorised -> UNKNOWN, no committed receipt, verifier flags      — UNKNOWN/finalize-fenced receipts=0 verifier_flagged=True
+  PASS  C10 [crash         ] unusable lock file -> that attempt skipped, recovery pass continues                               — other=KNOWN_NOT_DISPATCHED skipped_reasons=['lock-unusable']
   PASS  D1  [provider-fault] provider fails before commit -> UNKNOWN; recovery -> not dispatched, 0 effects                    — provider-unavailable: provider error before commit; effects=0; verdict=KNOWN_NOT_DISPATCHED
   PASS  D2  [provider-fault] provider commits but response lost -> UNKNOWN; recovery confirms by readback, 1 effect            — provider-unavailable: response lost after commit; effects=1; verdict=COMMITTED
   PASS  E1  [tamper        ] forged external effect with no authority -> verifier detects                                      — verifier flagged unauthorized effect
@@ -145,5 +165,5 @@ Under the explicit assumptions in README.md. Not a claim about a deployed system
   PASS  E7  [tamper        ] receipt stored under another attempt's identity -> detected                                       — verifier flagged identity swap
   PASS  F1  [positive      ] authorized path -> exactly one real effect, correct binding, verifier clean                       — status=COMMITTED effects=1 invariants_all_ok=True
 
-30/30 acceptance rows pass.
+38/38 acceptance rows pass.
 (exit 0)

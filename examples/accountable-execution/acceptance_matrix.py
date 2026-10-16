@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gexec
@@ -374,7 +375,7 @@ def cat_round4():
     commits = sum(1 for o in outs if o.status == "COMMITTED")
     losers_ok = all(o.reason == "not-available-or-already-claimed" for o in outs if o.status != "COMMITTED")
     nonces = len({json.loads(c["payload"])["nonce"] for c in contenders})
-    record("B4", "at-most-once", "16 distinct signed nonces, one attempt -> claim CAS admits exactly 1",
+    record("B4", "at-most-once", "16 distinct signed nonces via execute() (lock + CAS) -> exactly 1 effect",
            commits == 1 and losers_ok and nonces == 16 and world.count(att) == 1,
            f"nonces={nonces} commits={commits} losers_not_claimable={losers_ok} effects={world.count(att)}")
     shutil.rmtree(d, ignore_errors=True)
@@ -444,8 +445,131 @@ def cat_round4():
     shutil.rmtree(d, ignore_errors=True)
 
 
+# ----------------------------------------------------------------- review round 5
+def cat_round5():
+    """Rows for the independent adversarial review of 93ee61f: raw claim-CAS race,
+    tenant/policy binding, admission timing, lock aliasing, late out-of-band close,
+    unusable lock files and malformed envelopes."""
+    action = {"op": "charge", "amount": 400, "to": "acct-r5"}
+
+    def hold_at(point, paused, resume):
+        def hook(p):
+            if p == point:
+                paused.set(); resume.wait(10)
+        return hook
+
+    # B5: claim CAS raced directly, dispatch lock bypassed, registered identity on all
+    d, ap, ep, auth, led, world, ex = env()
+    g, att = grant(auth, led, action)
+    envs = [g] + [grant(auth, led, action, register=False, attempt=att)[0] for _ in range(15)]
+    checks = [gexec.verify_grant(e, auth.pub, action) for e in envs]
+    res = [None] * len(checks)
+    bar = threading.Barrier(len(checks))
+
+    def claim(i):
+        bar.wait()
+        res[i] = led.consume_nonce_and_claim(checks[i].grant.nonce, att,
+                                             grant=checks[i].grant, grant_env=checks[i].envelope)
+    ts = [threading.Thread(target=claim, args=(i,)) for i in range(len(checks))]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    record("B5", "at-most-once", "claim CAS raced directly (no lock), 16 distinct nonces -> exactly 1 winner",
+           res.count("ok") == 1 and res.count("not-claimable") == 15,
+           f"ok={res.count('ok')} not_claimable={res.count('not-claimable')}")
+    shutil.rmtree(d, ignore_errors=True)
+
+    # A10: a grant that expires while waiting for the attempt's lock is rejected
+    d, ap, ep, auth, led, world, ex = env()
+    g, att = grant(auth, led, action, ttl=1.0)
+    holder = gexec.GovernedExecutor(gexec.AuthorityLedger(led.path), gexec.ExternalWorld(world.path), auth.pub, ep)
+    held, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        with holder._attempt_lock(att, 5.0):
+            held.set(); release.wait(10)
+    t = threading.Thread(target=hold_lock); t.start(); held.wait(10)
+    threading.Timer(1.6, release.set).start()
+    o = ex.execute(action, g); t.join(10)
+    record("A10", "authority", "grant expires while waiting for the dispatch lock -> deny, 0 effects",
+           o.status == "REJECTED" and o.reason == "grant-expired" and world.count(att) == 0,
+           f"{o.reason}; effects={world.count(att)}")
+
+    # A11: a validly signed grant for another tenant cannot claim the registered attempt
+    g2, att2 = grant(auth, led, action)
+    other = auth.issue(proposal_id="p", action=action, target="svc://pay", allowance_id="al",
+                       attempt_id=att2, tenant="tenant-B", nonce="n-" + secrets.token_hex(6))
+    o = ex.execute(action, other)
+    record("A11", "authority", "signed grant for another tenant/policy than the registered row -> deny",
+           o.status == "REJECTED" and o.reason == "grant-authority-mismatch" and world.count(att2) == 0,
+           f"{o.reason}; effects={world.count(att2)}")
+
+    # A12: a replay is rejected immediately, without waiting on an in-flight dispatch
+    g3, att3 = grant(auth, led, action)
+    paused, resume = threading.Event(), threading.Event()
+    w = threading.Thread(target=lambda: ex.execute(action, g3, crash_hook=hold_at(
+        "after_dispatch_authorized", paused, resume)))
+    w.start(); paused.wait(10)
+    t0 = time.monotonic(); dup = ex.execute(action, g3); waited = time.monotonic() - t0
+    resume.set(); w.join(10)
+    record("A12", "authority", "replay during an in-flight dispatch -> rejected without waiting",
+           dup.reason == "replay-nonce" and waited < 2.0 and world.count(att3) == 1,
+           f"{dup.reason}; waited_under_2s={waited < 2.0} effects={world.count(att3)}")
+
+    # A13: malformed envelopes are rejected, never raised
+    bad = ({"signatures": ["x"]}, {"payloadType": gexec.GRANT_TYPE, "payload": 1, "signatures": ["x"]},
+           ["not", "a", "mapping"])
+    outs = [ex.execute(action, b).status for b in bad]
+    record("A13", "authority", "malformed grant envelopes -> rejected, never an exception",
+           outs == ["REJECTED"] * len(bad), f"statuses={outs}")
+    shutil.rmtree(d, ignore_errors=True)
+
+    # C8: recovery through a symlinked ledger path shares the dispatch lock
+    d, ap, ep, auth, led, world, ex = env()
+    g, att = grant(auth, led, action)
+    alias = os.path.join(d, "alias.db"); os.symlink(led.path, alias)
+    paused, resume, res8 = threading.Event(), threading.Event(), {}
+    w = threading.Thread(target=lambda: res8.setdefault("o", ex.execute(
+        action, g, crash_hook=hold_at("after_dispatch_authorized", paused, resume),
+        provider_fault="lose_response_after_commit")))
+    w.start(); paused.wait(10)
+    aliased = gexec.GovernedExecutor(gexec.AuthorityLedger(alias), gexec.ExternalWorld(world.path), auth.pub, ep)
+    during = dict(aliased.recover()).get(att)
+    resume.set(); w.join(10)
+    after = dict(aliased.recover()).get(att)
+    record("C8", "crash", "recovery via a symlinked ledger path overlapping a live dispatch -> skipped, then COMMITTED",
+           during is None and after == gexec.COMMITTED and world.count(att) == 1,
+           f"during={during} after={after} effects={world.count(att)}")
+
+    # C9: an out-of-band close racing an authorised dispatch -> UNKNOWN, no committed
+    #     receipt, verifier flags the contradiction
+    g9, att9 = grant(auth, led, action)
+    o = ex.execute(action, g9, crash_hook=lambda p: (
+        led.finalize(att9, gexec.CLOSED, gexec.KNOWN_NOT_DISPATCHED) if p == "after_dispatch_authorized" else None))
+    receipts9 = [r for r in led.all_receipts() if r["attempt_id"] == att9]
+    flagged = not {i.name: i.ok for i in gexec.independent_verify(
+        led, world, auth.pub, ep.public_key())}["no_effect_for_not_dispatched"]
+    record("C9", "crash", "out-of-band close after dispatch authorised -> UNKNOWN, no committed receipt, verifier flags",
+           o.status == "UNKNOWN" and o.reason == "finalize-fenced" and not receipts9 and flagged,
+           f"{o.status}/{o.reason} receipts={len(receipts9)} verifier_flagged={flagged}")
+    shutil.rmtree(d, ignore_errors=True)
+
+    # C10: an unusable lock file rejects execute and skips only that attempt in recovery
+    d, ap, ep, auth, led, world, ex = env()
+    gx, ax = grant(auth, led, action); gy, ay = grant(auth, led, action)
+    for e in (gx, gy):
+        c = gexec.verify_grant(e, auth.pub, action)
+        led.consume_nonce_and_claim(c.grant.nonce, c.grant.attempt_id, grant=c.grant, grant_env=c.envelope)
+    with open(ex._lock_path(ax), "wb") as f:
+        f.write(b"not a sqlite database" * 64)
+    resolved = dict(ex.recover())
+    record("C10", "crash", "unusable lock file -> that attempt skipped, recovery pass continues",
+           resolved.get(ay) == gexec.KNOWN_NOT_DISPATCHED and (ax, "lock-unusable") in ex.last_recovery_skipped,
+           f"other={resolved.get(ay)} skipped_reasons={[r for _, r in ex.last_recovery_skipped]}")
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
-    for fn in (cat_A, cat_B, cat_C, cat_D, cat_E, cat_F, cat_round4):
+    for fn in (cat_A, cat_B, cat_C, cat_D, cat_E, cat_F, cat_round4, cat_round5):
         fn()
     ROWS.sort(key=lambda r: (r["id"][0], int(r["id"][1:])))   # family, then number
     width = max(len(r["description"]) for r in ROWS)

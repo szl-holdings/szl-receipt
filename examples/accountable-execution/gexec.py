@@ -84,8 +84,8 @@ def verify_envelope(env: dict, trusted_pub: Ed25519PublicKey, payload_type: str)
             return None
         trusted_pub.verify(bytes.fromhex(sig_entry["sig"]), dsse_pae(payload_type, body))
         return json.loads(body)
-    except (InvalidSignature, KeyError, ValueError, IndexError, TypeError):
-        return None
+    except (InvalidSignature, KeyError, ValueError, IndexError, TypeError, AttributeError):
+        return None   # any malformed envelope is a rejection, never an exception
 
 
 # ---------------------------------------------------------------- grant
@@ -361,16 +361,23 @@ class AuthorityLedger:
                 c.execute("ROLLBACK")
                 return "replay"
             row = c.execute(
-                "SELECT state, action_digest, target, allowance_id FROM authority "
+                "SELECT state, action_digest, target, allowance_id, grant_env FROM authority "
                 "WHERE attempt_id=?", (attempt_id,),
             ).fetchone()
             if row is None or row["state"] != AVAILABLE:
                 c.execute("ROLLBACK")   # also un-burns this caller's nonce attempt
                 return "not-claimable"
-            if grant is not None and (grant.action_digest, grant.target, grant.allowance_id) != (
-                    row["action_digest"], row["target"], row["allowance_id"]):
-                c.execute("ROLLBACK")
-                return "grant-authority-mismatch"
+            if grant is not None:
+                try:   # the registered grant is the authority row's own record
+                    registered = json.loads(json.loads(row["grant_env"])["payload"])
+                except (TypeError, ValueError, KeyError):
+                    registered = {}
+                if ((grant.action_digest, grant.target, grant.allowance_id,
+                     grant.tenant, grant.policy_revision)
+                        != (row["action_digest"], row["target"], row["allowance_id"],
+                            registered.get("tenant"), registered.get("policy_revision"))):
+                    c.execute("ROLLBACK")
+                    return "grant-authority-mismatch"
             stored_env = None if grant_env is None else json.dumps(grant_env)
             c.execute(
                 "UPDATE authority SET state=?, claimed_at=?, grant_env=COALESCE(?, grant_env) "
@@ -424,6 +431,42 @@ class AuthorityLedger:
                 )
             c.commit()
             return cur.rowcount == 1
+        finally:
+            c.close()
+
+    def nonce_seen(self, nonce: str) -> bool:
+        """Read-only, non-authoritative fast path for rejecting an obvious replay
+        before waiting on a dispatch lock. The authoritative check stays inside
+        consume_nonce_and_claim."""
+        c = self._conn()
+        try:
+            return c.execute("SELECT 1 FROM seen_nonce WHERE nonce=?", (nonce,)).fetchone() is not None
+        finally:
+            c.close()
+
+    def close_with_receipt(self, attempt_id: str, env: dict, verdict: str,
+                           expected_states: list[str]) -> bool:
+        """Atomically close the attempt with `verdict` AND record its signed receipt in
+        ONE ledger transaction (receipts live in the same database). If the attempt is
+        no longer in `expected_states` nothing is written, so a fenced close can never
+        leave a receipt that contradicts the ledger, and a crash can never leave a
+        COMMITTED verdict without its receipt."""
+        c = self._conn()
+        c.isolation_level = None
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            cur = c.execute(
+                "UPDATE authority SET state=?, verdict=?, closed_at=? WHERE attempt_id=? "
+                "AND state IN (%s)" % ",".join("?" * len(expected_states)),
+                (CLOSED, verdict, time.time(), attempt_id, *expected_states),
+            )
+            if cur.rowcount != 1:
+                c.execute("ROLLBACK")
+                return False
+            c.execute("INSERT OR IGNORE INTO receipts VALUES(?,?,?)",
+                      (attempt_id, json.dumps(env), time.time()))
+            c.execute("COMMIT")
+            return True
         finally:
             c.close()
 
@@ -490,6 +533,7 @@ class GovernedExecutor:
         self.authorizer_pub = authorizer_pub
         self.exec_priv = exec_priv
         self.lock_timeout_s = 30.0   # how long execute() waits for an attempt's lock
+        self.last_recovery_skipped: list[tuple[str, str]] = []
 
     def _receipt(self, grant: dict, effect_id: str, verdict: str) -> dict:
         payload = {
@@ -517,6 +561,14 @@ class GovernedExecutor:
             return "idempotency-key-conflict"
         return None
 
+    def _lock_path(self, aid: str) -> str:
+        """Per-attempt lock file, keyed on the ledger's real path and (device, inode)."""
+        real = os.path.realpath(self.ledger.path)
+        st = os.stat(real)
+        lock_dir = os.path.join(os.path.dirname(real), f".gexec-locks-{st.st_dev}-{st.st_ino}")
+        os.makedirs(lock_dir, exist_ok=True)
+        return os.path.join(lock_dir, sha256_hex(aid.encode())[:32] + ".lock")
+
     @contextmanager
     def _attempt_lock(self, aid: str, timeout_s: float):
         """Per-attempt dispatch lock: an exclusive SQLite lock on a small per-attempt
@@ -525,21 +577,41 @@ class GovernedExecutor:
         observe a live dispatch half-way. The OS releases the lock when a process
         dies, so a crashed executor never blocks recovery. Yields True if acquired.
 
+        The lock directory is keyed on the ledger's resolved real path and its
+        (device, inode), so a symlinked path or a same-directory hard link to the same
+        ledger shares one lock. Yields "acquired", "busy" (another holder) or
+        "unusable" (lock file cannot be used, e.g. not a SQLite file); only
+        "acquired" permits work.
+
         Limits: a provider call that hangs keeps ITS attempt locked (recovery skips
         that attempt until the call returns or the process exits) but blocks no other
-        attempt; file locks are host-local, so this fences processes on one host."""
-        lock_dir = self.ledger.path + ".locks"
-        os.makedirs(lock_dir, exist_ok=True)
-        path = os.path.join(lock_dir, sha256_hex(aid.encode())[:32] + ".lock")
-        conn = sqlite3.connect(path, timeout=timeout_s, isolation_level=None)
+        attempt; file locks are host-local, so this fences processes on one host;
+        and on POSIX any other open()+close() of a lock file inside the holder's own
+        process silently drops its lock, so nothing else may open these files."""
+        # A hard-linked ledger has more than one directory entry; aliases in other
+        # directories would derive different lock directories (and SQLite itself does
+        # not support hard-linked databases: journal/WAL files are named by path).
+        # Refuse to admit or recover through it rather than fence incompletely.
+        try:
+            if os.stat(os.path.realpath(self.ledger.path)).st_nlink != 1:
+                yield "unusable"
+                return
+            path = self._lock_path(aid)
+            conn = sqlite3.connect(path, timeout=timeout_s, isolation_level=None)
+        except (OSError, sqlite3.Error):
+            yield "unusable"
+            return
         try:
             try:
                 conn.execute("BEGIN EXCLUSIVE")
             except sqlite3.OperationalError:
-                yield False
+                yield "busy"
+                return
+            except sqlite3.DatabaseError:
+                yield "unusable"
                 return
             try:
-                yield True
+                yield "acquired"
             finally:
                 conn.execute("ROLLBACK")
         finally:
@@ -569,9 +641,20 @@ class GovernedExecutor:
         grant = verified.body()
         aid = verified.attempt_id
 
-        with self._attempt_lock(aid, self.lock_timeout_s) as locked:
-            if not locked:
+        # Fast path: an already-consumed nonce is rejected without waiting on the
+        # attempt's dispatch lock (the authoritative check stays inside the claim).
+        if self.ledger.nonce_seen(verified.nonce):
+            return Outcome("REJECTED", "replay-nonce")
+
+        with self._attempt_lock(aid, self.lock_timeout_s) as lock:
+            if lock == "busy":
                 return Outcome("REJECTED", "attempt-in-flight")   # zero effect by this caller
+            if lock != "acquired":
+                return Outcome("REJECTED", "attempt-lock-unavailable")
+
+            # Waiting for the lock takes time: re-check expiry at admission.
+            if (time.time() if now is None else now) > verified.expires_at:
+                return Outcome("REJECTED", "grant-expired")
 
             # 2+3. atomic single-use: consume the nonce AND claim in ONE transaction,
             #      bound to the registered authority row. Losers never dispatch.
@@ -613,11 +696,12 @@ class GovernedExecutor:
                 return Outcome("REJECTED", conflict)
             crash("after_effect_before_receipt")
 
-            # 6. bind a signed receipt to the REAL effect, then close (CAS)
+            # 6. bind a signed receipt to the REAL effect and close, atomically (CAS):
+            #    if the attempt was closed out of band, no receipt is written and the
+            #    outcome stays UNKNOWN for the independent verifier to reconcile.
             env = self._receipt(grant, effect_id, COMMITTED)
-            self.ledger.record_receipt(aid, env)
-            if not self.ledger.finalize(aid, CLOSED, COMMITTED,
-                                        expected_states=[DISPATCH_AUTHORIZED]):
+            if not self.ledger.close_with_receipt(aid, env, COMMITTED,
+                                                  expected_states=[DISPATCH_AUTHORIZED]):
                 return Outcome("UNKNOWN", "finalize-fenced", effect_id, created)
             crash("after_close_before_return")
             return Outcome("COMMITTED", "ok", effect_id, created)
@@ -631,21 +715,32 @@ class GovernedExecutor:
         CLAIMED/DISPATCH_AUTHORIZED with no effect -> KNOWN_NOT_DISPATCHED
         (consumption retained, NO resend). With a matching effect -> COMMITTED (bind
         the receipt to the real effect). A mismatched effect -> EFFECT_CONFLICT. An
-        uncertain state never becomes a success claim without a confirmed effect."""
+        uncertain state never becomes a success claim without a confirmed effect.
+
+        Attempts left open are reported in `self.last_recovery_skipped` as
+        (attempt_id, reason): "in-flight", "lock-unusable" or
+        "stored-grant-unverifiable" (e.g. tampered, or signed by a rotated-out key)."""
         resolved = []
+        self.last_recovery_skipped = []
         open_states = [CLAIMED, DISPATCH_AUTHORIZED]
         for listed in self.ledger.in_states(open_states):
             aid = listed["attempt_id"]
-            with self._attempt_lock(aid, lock_timeout_s) as locked:
-                if not locked:
-                    continue                      # live dispatch in progress
+            with self._attempt_lock(aid, lock_timeout_s) as lock:
+                if lock != "acquired":            # live dispatch, or an unusable lock file:
+                    self.last_recovery_skipped.append(   # skip THIS attempt only
+                        (aid, "in-flight" if lock == "busy" else "lock-unusable"))
+                    continue
                 row = self.ledger.row(aid)        # re-read under the lock
                 if row is None or row["state"] not in open_states:
                     continue
-                stored = verify_envelope(json.loads(row["grant_env"]),
-                                         self.authorizer_pub, GRANT_TYPE)
+                try:
+                    stored = verify_envelope(json.loads(row["grant_env"]),
+                                             self.authorizer_pub, GRANT_TYPE)
+                except (TypeError, ValueError):
+                    stored = None
                 if stored is None:
-                    continue                      # tampered grant: leave for the verifier
+                    self.last_recovery_skipped.append((aid, "stored-grant-unverifiable"))
+                    continue                      # left for the independent verifier
                 effect = self.world.get(aid)
                 if effect is None:
                     if self.ledger.finalize(aid, CLOSED, KNOWN_NOT_DISPATCHED,
@@ -661,8 +756,7 @@ class GovernedExecutor:
                         resolved.append((aid, EFFECT_CONFLICT))
                     continue
                 env = self._receipt(stored, effect["effect_id"], COMMITTED)
-                self.ledger.record_receipt(aid, env)
-                if self.ledger.finalize(aid, CLOSED, COMMITTED, expected_states=open_states):
+                if self.ledger.close_with_receipt(aid, env, COMMITTED, expected_states=open_states):
                     resolved.append((aid, COMMITTED))
         return resolved
 

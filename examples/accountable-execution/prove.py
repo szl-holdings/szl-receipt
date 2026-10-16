@@ -42,11 +42,12 @@ def keys():
     return Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
 
 
-def new_grant(auth, action, *, attempt=None, nonce=None, ttl=30.0, now=None):
+def new_grant(auth, action, *, attempt=None, nonce=None, ttl=30.0, now=None, allowance=None):
     attempt = attempt or "att-" + secrets.token_hex(6)
     nonce = nonce or "n-" + secrets.token_hex(6)
     env = auth.issue(proposal_id="p-" + secrets.token_hex(4), action=action,
-                     target="svc://pay/charge", allowance_id="al-" + secrets.token_hex(4),
+                     target="svc://pay/charge",
+                     allowance_id=allowance or "al-" + secrets.token_hex(4),
                      attempt_id=attempt, nonce=nonce, ttl_s=ttl, now=now)
     return env, attempt
 
@@ -358,22 +359,28 @@ def property_6_grant_binding_and_recovery_fencing():
           out.status == "COMMITTED" and world.get(att)["target"] == "svc://pay/charge",
           f"dispatched={world.get(att)['target']}")
 
-    # 6b: distinct signed nonces sharing one attempt isolate the claim CAS
+    # 6b: the claim CAS raced DIRECTLY (dispatch lock bypassed): distinct signed nonces,
+    #     one attempt, every contender carrying the registered identity, so only the
+    #     compare-and-swap itself can serialise them.
     d, led, world, ex = fresh_stack(); dirs.append(d)
-    env, att = new_grant(auth, a); led.register(env)
-    contenders = [env] + [new_grant(auth, a, attempt=att)[0] for _ in range(15)]
-    outs = [None] * len(contenders)
-    barrier = threading.Barrier(len(contenders))
+    env, att = new_grant(auth, a, allowance="al-shared"); led.register(env)
+    contenders = [env] + [new_grant(auth, a, attempt=att, allowance="al-shared")[0]
+                          for _ in range(15)]
+    checks = [gexec.verify_grant(e, auth.pub, a) for e in contenders]
+    results = [None] * len(checks)
+    barrier = threading.Barrier(len(checks))
 
-    def run(i):
+    def claim(i):
         barrier.wait()
-        outs[i] = ex.execute(a, contenders[i])
-    ts = [threading.Thread(target=run, args=(i,)) for i in range(len(contenders))]
+        results[i] = led.consume_nonce_and_claim(
+            checks[i].grant.nonce, att, grant=checks[i].grant, grant_env=checks[i].envelope)
+    ts = [threading.Thread(target=claim, args=(i,)) for i in range(len(checks))]
     for t in ts: t.start()
     for t in ts: t.join()
-    commits = sum(1 for o in outs if o.status == "COMMITTED")
-    check("16 distinct signed nonces on one attempt -> claim CAS admits exactly 1",
-          commits == 1 and world.count(att) == 1, f"commits={commits} effects={world.count(att)}")
+    check("claim CAS raced directly by 16 distinct signed nonces -> exactly 1 winner",
+          all(c.ok for c in checks) and results.count("ok") == 1
+          and results.count("not-claimable") == 15,
+          f"ok={results.count('ok')} not_claimable={results.count('not-claimable')}")
 
     # 6c: recovery overlapping a live dispatch whose provider commits but loses the response
     d, led, world, ex = fresh_stack(); dirs.append(d)

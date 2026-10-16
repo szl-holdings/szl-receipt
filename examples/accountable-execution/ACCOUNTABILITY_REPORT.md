@@ -32,7 +32,7 @@ for this PR and appears nowhere below as achieved.
 | 2 | One review card per asset | `SOURCE_REVIEWED` (partial, elsewhere) | Key assets reviewed at pinned heads in-session; a full per-asset card set is not part of this PR. |
 | 3 | Consolidated resume / supersession | `SOURCE_REVIEWED` (partial, elsewhere) | Surviving lanes and holds tracked in-session; not re-asserted here. |
 | 4 | Minimal reviewed diff + threat model + state machine + external-effect assumptions | `TESTS_REPRODUCED` | `gexec.py` (the chain), `README.md` (threat model, state machine, two-store boundary). A reference implementation in a new example dir — **not** a patch into the served runtime. |
-| 5 | Reproducible local demo + separate verifier, durable state, adversarial, concurrency, crash injection | `TESTS_REPRODUCED` | `prove.py` (49 checks), `test_negative.py` (22 unittests), `acceptance_matrix.py` (30 rows), `independent_verify()` as the separate verifier. Durable SQLite stores; real subprocess hard-crashes; N-thread races. Round-3 review findings (action snapshot, effect-identity reconciliation, atomic nonce+claim) and round-4 findings (verified-grant snapshot, receipt semantics for every verdict, execution/recovery fencing, distinct-nonce contention) fixed and regression-covered. |
+| 5 | Reproducible local demo + separate verifier, durable state, adversarial, concurrency, crash injection | `TESTS_REPRODUCED` | `prove.py` (49 checks), `test_negative.py` (34 unittests), `acceptance_matrix.py` (38 rows), `independent_verify()` as the separate verifier. Durable SQLite stores; real subprocess hard-crashes; N-thread races. Round-3 review findings (action snapshot, effect-identity reconciliation, atomic nonce+claim) and round-4 findings (verified-grant snapshot, receipt semantics for every verdict, execution/recovery fencing, distinct-nonce contention) fixed and regression-covered, as are round-5 findings (direct claim-CAS race, ledger-alias fencing, atomic close+receipt, admission timing, unusable locks, malformed envelopes, tenant/policy binding). |
 | 6 | Honest demonstration narrative + evidence package (claim → source → test → observation → limitation) | `TESTS_REPRODUCED` | This report + `README.md` + `RESULTS.txt`. No fabricated pass, signature, or live label; the chain is shown below. |
 | 7 | Prior-work comparison + preregistered cost/reliability plan | comparison `SOURCE_REVIEWED`; cost eval `NOT_RUN` (pre-registered) | `MEASUREMENT_PLAN.md`. The comparison cites named prior art; the cost/reliability numbers are **registered before** any run, not reported. |
 | 8 | Smallest remaining approval requests | enumerated below | Each names action, target, cost and stopping condition. None bundled. |
@@ -50,7 +50,7 @@ reproduces the behaviour.
 | `deny-expired` | A2 | **COVERED** — reject, 0 effects. Clock-skew *window* sweep not run (see gaps). |
 | `deny-replayed` | A5 | **COVERED** — second use denied, exactly 1 effect. Replay *after durable restart* is shown by the crash rows (C), not A5 itself. |
 | `deny-bindings` | A3 (missing authority), A4 (wrong tenant), A6 (forged sig), **A8** (grant changed after verification), **A9** (grant vs registered authority) | **COVERED** for these bindings; actor/policy-id and malformed-envelope bindings **NOT_RUN**. |
-| `concurrent` | B1, **B4** | **COVERED** — 24 same-grant/same-nonce racers → exactly 1 effect, losers truthful (B1); 16 *distinct* signed nonces on one attempt → the claim CAS alone admits exactly 1 (B4). |
+| `concurrent` | B1, B4, **B5** | **COVERED** — 24 same-grant/same-nonce racers → exactly 1 effect, losers truthful (B1); 16 *distinct* signed nonces through `execute()` → exactly 1 effect (B4, dispatch lock + CAS); the claim CAS raced directly with the lock bypassed → exactly 1 winner (B5; verified by mutation testing against a non-atomic CAS). |
 | `key-body-conflict` | B2, **B3** | **COVERED** — same key, different body → no second effect; existing key with a different target/payload → `EFFECT_CONFLICT`, never `COMMITTED` (reconciled in execute, recover, and verify). |
 | `dedup-expiry` | — | **NOT_RUN** — provider dedup-retention expiry before retry is not modelled. |
 | `crash-matrix` | C1–C7, D2 | **PARTIAL** — 5 crash points (incl. the atomic nonce+claim boundary, C5) + "provider commits before response" (D2) + recovery overlapping a live dispatch with a lost response (C6) + out-of-band close fencing dispatch (C7). "During dispatch" and "response-before-local-commit" as distinct points are **NOT_RUN**. |
@@ -76,11 +76,11 @@ bindings; and all of `positive-deployed`. Zero observed failures in the covered 
   two-store ordering). The production boundary it models is a11oy's policy runtime,
   `IMPLEMENTED NOT DEPLOYED` — committed report read (`TESTS_REPORTED`), not rerun, and
   not wired to the served path.
-- **Test.** `python3 prove.py` (49), `python3 -m unittest test_negative -v` (22),
-  `python3 acceptance_matrix.py` (30). Durable stores, real subprocess crashes, thread
+- **Test.** `python3 prove.py` (49), `python3 -m unittest test_negative -v` (34),
+  `python3 acceptance_matrix.py` (38). Durable stores, real subprocess crashes, thread
   races.
 - **Observation.** `RESULTS.txt` — exact commands and raw output, no secrets. Counts are
-  reported per suite and **never summed** across suites (49, 22, and 30 are distinct
+  reported per suite and **never summed** across suites (49, 34, and 38 are distinct
   experiments, never added together). Of prove.py's 49, three are invariants added to
   Property 4's existing estate, not new independently varied scenarios.
 - **Limitation.** SQLite stands in for both the durable store and the external service's

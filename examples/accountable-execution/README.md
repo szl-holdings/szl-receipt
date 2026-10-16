@@ -7,8 +7,8 @@ not an unconditional guarantee.**
 
 ```
 python3 prove.py                       # property suite (happy path + adversaries), 49 checks
-python3 -m unittest test_negative -v   # independent negative/adversarial tests, 22 cases
-python3 acceptance_matrix.py           # A–F acceptance matrix (30 named rows)
+python3 -m unittest test_negative -v   # independent negative/adversarial tests, 34 cases
+python3 acceptance_matrix.py           # A–F acceptance matrix (38 named rows)
 python3 acceptance_matrix.py --json    # same, regenerating DEMO_CASES.json
 ```
 
@@ -33,7 +33,7 @@ Policy (grant) → governed executor → external effect → receipt → indepen
 | **3. Crashes never fake success** | hard process death before/after dispatch | uncertain state is never a success claim; resolved only by external readback; no double effect on restart |
 | **4. Independent reconciliation** | a forged effect or a tampered receipt | the verifier **detects** it; every committed receipt is backed by a real effect |
 | **5. Composition integrity** | action mutated after validation; foreign effect under the key; crash between nonce and claim | the **snapshot** is dispatched (no TOCTOU); a key hit with different content is never `COMMITTED`; nonce-consume + claim are **atomic** so no attempt is stranded |
-| **6. Grant binding & recovery fencing** | envelope payload changed after verification; distinct signed nonces on one attempt; recovery overlapping a live dispatch; receipts that contradict the grant, ledger or effect | only the **signed** target is dispatched; the claim CAS admits exactly one; recovery **skips** a live attempt instead of guessing, so a late provider commit still ends `COMMITTED`; every signed receipt, whatever its verdict, is reconciled |
+| **6. Grant binding & recovery fencing** | envelope payload changed after verification; distinct signed nonces on one attempt; recovery overlapping a live dispatch; receipts that contradict the grant, ledger or effect | only the **signed** target is dispatched; the claim CAS, raced directly with the lock bypassed, admits exactly one; recovery **skips** a live attempt instead of guessing, so a late provider commit still ends `COMMITTED`; every signed receipt, whatever its verdict, is reconciled |
 
 `test_negative.py` runs the adversarial cases as standalone `unittest` cases,
 independent of the `prove.py` harness, so the negative controls can be run and reviewed
@@ -41,15 +41,15 @@ on their own.
 
 ## The A–F acceptance matrix
 
-`acceptance_matrix.py` runs **30 named, individually-labelled rows** grouped into six
+`acceptance_matrix.py` runs **38 named, individually-labelled rows** grouped into six
 families, each asserting the exact behaviour that must hold (and the things that must
 *not* happen). `--json` writes the machine-readable outcomes to `DEMO_CASES.json`.
 
 | Family | Rows | What it pins down |
 |---|---|---|
-| **A. Authority is exact & single-use** | A1–A9 | tampered-body, expired, missing-authority, wrong-tenant, replay, forged-signature → **zero** effect; **A7** action mutated after validation → the snapshot is dispatched, not the mutation; **A8** grant payload changed after verification → only the signed target is dispatched; **A9** signed grant that disagrees with the registered authority row → denied |
-| **B. Concurrency & effect-identity** | B1–B4 | N racers on the same grant/nonce → at-most-one effect and **truthful losers**; same key / different payload → no second effect; **B4** 16 *distinct* signed nonces on one attempt → the claim CAS alone admits exactly one; **B3** existing key with a different target/payload → `EFFECT_CONFLICT`, never `COMMITTED` |
-| **C. Crash safety** | C1–C7 | hard death at five points never turns an uncertain result into a success claim; **C5** crash between nonce and claim leaves a `CLAIMED`, recoverable attempt — never a stranded `AVAILABLE` one with a burned nonce; **C6** recovery overlapping a live dispatch whose provider commits but loses the response → skipped, then `COMMITTED`; **C7** attempt closed out of band after claim → dispatch fenced |
+| **A. Authority is exact & single-use** | A1–A13 | tampered-body, expired, missing-authority, wrong-tenant, replay, forged-signature → **zero** effect; **A7** action mutated after validation → the snapshot is dispatched, not the mutation; **A8** grant payload changed after verification → only the signed target is dispatched; **A9** signed grant that disagrees with the registered authority row → denied; **A10** grant that expires while waiting for the dispatch lock → denied; **A11** signed grant for another tenant/policy revision → denied; **A12** replay during an in-flight dispatch → rejected without waiting; **A13** malformed envelopes → rejected, never raised |
+| **B. Concurrency & effect-identity** | B1–B5 | N racers on the same grant/nonce → at-most-one effect and **truthful losers**; same key / different payload → no second effect; **B4** 16 *distinct* signed nonces through `execute()` (dispatch lock + claim CAS) → exactly one effect; **B5** the claim CAS raced directly with the lock bypassed → exactly one winner; **B3** existing key with a different target/payload → `EFFECT_CONFLICT`, never `COMMITTED` |
+| **C. Crash safety** | C1–C10 | hard death at five points never turns an uncertain result into a success claim; **C5** crash between nonce and claim leaves a `CLAIMED`, recoverable attempt — never a stranded `AVAILABLE` one with a burned nonce; **C6** recovery overlapping a live dispatch whose provider commits but loses the response → skipped, then `COMMITTED`; **C7** attempt closed out of band after claim → dispatch fenced; **C8** recovery through a symlinked ledger path overlapping a live dispatch → skipped, then `COMMITTED`; **C9** out-of-band close racing an authorised dispatch → `UNKNOWN`, no committed receipt, verifier flags it; **C10** unusable lock file → that attempt skipped, the recovery pass continues |
 | **D. Provider faults** | D1–D2 | fault **before** commit → `UNKNOWN`, not-dispatched; commit **but response lost** → `UNKNOWN`, then `COMMITTED` by readback |
 | **E. Verifier catches a liar** | E1–E7 | forged effect, tampered receipt, executor that *claims* success with no effect, **E4** real effect content altered after commit, **E5** receipt contradicting the signed grant, **E6** signed non-`COMMITTED` receipt contradicting the ledger/effect, **E7** receipt stored under another attempt's identity → **detected** |
 | **F. Positive path** | F1 | authorized action → exactly one real effect, correct binding, all invariants clean |
@@ -93,12 +93,35 @@ regression that fails on that head:
    left a real effect mislabeled and unrecoverable. Dispatch and recovery are now fenced
    by a per-attempt lock, and every state transition is compare-and-swap (C6, C7,
    Property 6c/6d) — see *Execution/recovery fencing* below.
-4. **Contention coverage.** Distinct signed nonces sharing one attempt now isolate the
-   claim CAS (B4, Property 6b), kept separate from same-grant/same-nonce replay
-   contention (B1). The CAS already behaved correctly; this closes a coverage gap.
+4. **Contention coverage.** Distinct signed nonces sharing one attempt are raced against
+   the claim CAS directly (B5, Property 6b) and end to end through `execute()` (B4), kept
+   separate from same-grant/same-nonce replay contention (B1). The CAS already behaved
+   correctly; this closed a coverage gap. (Round 5 corrected the first version of this
+   test, which could not detect a broken CAS — see below.)
 
 The three invariants added in this round are also iterated by Property 4; they are added
 checks over the same estate, not new independently varied scenarios.
+
+### Review round 5 (independent adversarial review of 93ee61f, plus dot) — closed here
+
+1. **The claim-CAS evidence could not detect a broken CAS.** The end-to-end contention
+   test is serialised by the dispatch lock, and Property 6b gave contenders random
+   allowances. Mutation testing proved it: a non-atomic check-then-set CAS passed every
+   suite. B5 / Property 6b now race `consume_nonce_and_claim` directly with the lock
+   bypassed and the registered identity on every contender; both mutants now fail
+   (16 and 8 winners instead of 1).
+2. **Ledger path aliases fenced separately** (also reported by dot). The lock was keyed on
+   the ledger path *string*, so recovery through a symlink — in another process — could
+   finalize `KNOWN_NOT_DISPATCHED` while the dispatch committed. The lock is now keyed on
+   the real path and (device, inode); hard-linked ledgers fail closed (C8 and the
+   same-host cross-process regression).
+3. **Out-of-band close wording overclaimed**; close + receipt are now one transaction, so a
+   fenced close leaves no contradictory receipt (C9).
+4. **Admission timing**: replays no longer wait on an in-flight dispatch (A12); expiry is
+   re-checked after the lock wait (A10).
+5. **Robustness**: an unusable lock file no longer aborts a recovery pass (C10); malformed
+   envelopes are rejected rather than raised (A13); the claim also binds tenant and policy
+   revision (A11); recovery reports every attempt it leaves open.
 
 ## The two-store transaction & idempotency boundary
 
@@ -137,17 +160,37 @@ explicit and tested, not a two-phase commit.
 
 Absence of an effect is only evidence of "not dispatched" if no live dispatcher can
 still commit one. Each attempt therefore has a **dispatch lock** — an exclusive SQLite
-lock on a small per-attempt file next to the ledger. `execute()` holds it from claim to
+lock on a small per-attempt file in a directory keyed on the ledger's resolved real path
+and its (device, inode), so every symlinked path to the same ledger, from any directory
+and any process on the host, shares one lock. A hard-linked ledger is refused outright
+(fail closed): hard links in other directories cannot be fenced by path, and SQLite
+itself does not support hard-linked databases. `execute()` holds it from claim to
 close; `recover()` only resolves an attempt while holding it and **skips** any attempt a
 live executor holds, so that attempt stays recoverable instead of being guessed closed.
 The OS releases the lock when a process dies, so a crashed executor never blocks
 recovery. As defense in depth, `CLAIMED → DISPATCH_AUTHORIZED` and every terminal
-transition are compare-and-swap: an attempt closed out of band is never dispatched.
+transition are compare-and-swap, and the terminal close and its signed receipt are
+written in **one** ledger transaction. An attempt closed out of band *before* dispatch is
+authorised is never dispatched. A close that races an *already authorised* dispatch cannot
+stop the effect: the executor then writes no receipt, reports `UNKNOWN`
+(`finalize-fenced`), and the independent verifier flags the contradiction (C9). Out-of-band
+closes bypass the lock by definition; only `recover()` is a supported closer.
+
+Admission details: an already-consumed nonce is rejected before waiting on the lock
+(non-authoritative fast path; the claim stays authoritative); grant expiry is re-checked
+after the lock is acquired; an unusable lock file rejects that attempt and recovery skips
+only that attempt. Every skipped attempt is reported in `last_recovery_skipped`.
 
 Limits, stated plainly: a provider call that **hangs** keeps *its* attempt locked
 (recovery skips that attempt until the call returns or the process exits) but blocks no
-other attempt; and file locks are **host-local**, so this fences executors and recovery
-on one host only. Multi-host deployment needs a distributed lease with fencing tokens.
+other attempt; file locks are **host-local**, so this fences executors and recovery on
+one host only (multi-host deployment needs a distributed lease with fencing tokens and an
+effect-boundary fence at the provider); on POSIX, any other `open()`+`close()` of a lock
+file inside the holder's process silently drops its lock, so nothing else may open these
+files; and if an executor dies *during a real network request*, recovery may mark the
+attempt not-dispatched before a late provider commit lands — the SQLite `ExternalWorld`
+cannot exhibit this, and a real adapter needs provider-side request expiry or query-by-key
+before that case can be claimed.
 
 ## Threat model (the explicit assumptions)
 
@@ -155,7 +198,8 @@ The adversary **may**: replay, alter, or expire grants; race N attempts concurre
 and crash the process at any instruction. The adversary **may not**: forge the
 authorizer's ed25519 signature, or bypass the external store's unique constraint
 (i.e. the external service honours its idempotency key). Executors and recovery share
-one host (the dispatch lock is a host-local file lock), and a provider failure reported
+one host and reach the ledger by one inode (the dispatch lock is a host-local file lock;
+hard-linked ledgers are refused), and a provider failure reported
 *before* commit is taken to mean no late commit will follow. The properties are asserted
 **only under these assumptions.** Change the assumptions and the claims must be
 re-derived.

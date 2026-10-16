@@ -66,6 +66,34 @@
       "evidence": "grant-authority-mismatch; effects=0"
     },
     {
+      "id": "A10",
+      "category": "authority",
+      "description": "grant expires while waiting for the dispatch lock -> deny, 0 effects",
+      "label": "PASS",
+      "evidence": "grant-expired; effects=0"
+    },
+    {
+      "id": "A11",
+      "category": "authority",
+      "description": "signed grant for another tenant/policy than the registered row -> deny",
+      "label": "PASS",
+      "evidence": "grant-authority-mismatch; effects=0"
+    },
+    {
+      "id": "A12",
+      "category": "authority",
+      "description": "replay during an in-flight dispatch -> rejected without waiting",
+      "label": "PASS",
+      "evidence": "replay-nonce; waited_under_2s=True effects=1"
+    },
+    {
+      "id": "A13",
+      "category": "authority",
+      "description": "malformed grant envelopes -> rejected, never an exception",
+      "label": "PASS",
+      "evidence": "statuses=['REJECTED', 'REJECTED', 'REJECTED']"
+    },
+    {
       "id": "B1",
       "category": "at-most-once",
       "description": "N concurrent identical requests (same grant+nonce) -> exactly 1 effect; losers truthful",
@@ -89,9 +117,16 @@
     {
       "id": "B4",
       "category": "at-most-once",
-      "description": "16 distinct signed nonces, one attempt -> claim CAS admits exactly 1",
+      "description": "16 distinct signed nonces via execute() (lock + CAS) -> exactly 1 effect",
       "label": "PASS",
       "evidence": "nonces=16 commits=1 losers_not_claimable=True effects=1"
+    },
+    {
+      "id": "B5",
+      "category": "at-most-once",
+      "description": "claim CAS raced directly (no lock), 16 distinct nonces -> exactly 1 winner",
+      "label": "PASS",
+      "evidence": "ok=1 not_claimable=15"
     },
     {
       "id": "C1",
@@ -141,6 +176,27 @@
       "description": "attempt closed out of band after claim -> dispatch fenced, 0 effects",
       "label": "PASS",
       "evidence": "fenced-before-dispatch; effects=0"
+    },
+    {
+      "id": "C8",
+      "category": "crash",
+      "description": "recovery via a symlinked ledger path overlapping a live dispatch -> skipped, then COMMITTED",
+      "label": "PASS",
+      "evidence": "during=None after=COMMITTED effects=1"
+    },
+    {
+      "id": "C9",
+      "category": "crash",
+      "description": "out-of-band close after dispatch authorised -> UNKNOWN, no committed receipt, verifier flags",
+      "label": "PASS",
+      "evidence": "UNKNOWN/finalize-fenced receipts=0 verifier_flagged=True"
+    },
+    {
+      "id": "C10",
+      "category": "crash",
+      "description": "unusable lock file -> that attempt skipped, recovery pass continues",
+      "label": "PASS",
+      "evidence": "other=KNOWN_NOT_DISPATCHED skipped_reasons=['lock-unusable']"
     },
     {
       "id": "D1",

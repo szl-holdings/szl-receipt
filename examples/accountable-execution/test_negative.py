@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -378,6 +379,254 @@ class TestDistinctNonceContention(Base):
         self.assertTrue(all(o.reason == "not-available-or-already-claimed"
                             for o in outs if o.status != "COMMITTED"))
         self.assertEqual(self.world.count(att), 1)
+
+
+class TestClaimCasRacedDirectly(Base):
+    """The claim CAS raced with the dispatch lock BYPASSED: distinct signed nonces, one
+    attempt, the registered identity on every contender. Only the CAS can serialise
+    them, so a non-atomic check-then-set lets more than one win."""
+
+    def test_exactly_one_contender_wins_the_raw_claim(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        envs = [env] + [_issue(self.auth, action, att) for _ in range(15)]
+        checks = [gexec.verify_grant(e, self.auth.pub, action) for e in envs]
+        self.assertTrue(all(c.ok for c in checks))
+        results = [None] * len(checks)
+        barrier = threading.Barrier(len(checks))
+
+        def claim(i):
+            barrier.wait()
+            results[i] = self.led.consume_nonce_and_claim(
+                checks[i].grant.nonce, att, grant=checks[i].grant, grant_env=checks[i].envelope)
+
+        threads = [threading.Thread(target=claim, args=(i,)) for i in range(len(checks))]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertEqual(results.count("ok"), 1, results)
+        self.assertEqual(results.count("not-claimable"), len(checks) - 1, results)
+
+
+class TestClaimBindsTenantAndPolicy(Base):
+    def test_other_tenant_cannot_claim(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)                                   # tenant-A registered
+        other = self.auth.issue(proposal_id="p", action=action, target="svc://pay",
+                                allowance_id="al", attempt_id=att, tenant="tenant-B",
+                                nonce="n-" + secrets.token_hex(6))
+        out = self.ex.execute(action, other)
+        self.assertEqual((out.status, out.reason), ("REJECTED", "grant-authority-mismatch"))
+        self.assertEqual(self.world.count(att), 0)
+
+    def test_other_policy_revision_cannot_claim(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)                                   # policy-v1 registered
+        other = gexec.Authorizer(self.ap, "policy-v2").issue(
+            proposal_id="p", action=action, target="svc://pay", allowance_id="al",
+            attempt_id=att, nonce="n-" + secrets.token_hex(6))
+        out = self.ex.execute(action, other)
+        self.assertEqual((out.status, out.reason), ("REJECTED", "grant-authority-mismatch"))
+
+
+class TestLockAliasing(Base):
+    def _recover_through(self, alias_path):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        paused, resume, out = threading.Event(), threading.Event(), {}
+
+        def hold(point):
+            if point == "after_dispatch_authorized":
+                paused.set()
+                resume.wait(10)
+
+        worker = threading.Thread(target=lambda: out.setdefault("o", self.ex.execute(
+            action, env, crash_hook=hold, provider_fault="lose_response_after_commit")))
+        worker.start()
+        self.assertTrue(paused.wait(10))
+        aliased = gexec.GovernedExecutor(gexec.AuthorityLedger(alias_path),
+                                         gexec.ExternalWorld(self.wp), self.auth.pub, self.ep)
+        during = dict(aliased.recover()).get(att)
+        skipped = aliased.last_recovery_skipped
+        resume.set()
+        worker.join(10)
+        after = dict(aliased.recover()).get(att)
+        return att, during, skipped, after
+
+    def test_symlinked_ledger_path_shares_the_dispatch_lock(self):
+        alias = os.path.join(self.dir, "alias.db")
+        os.symlink(self.lp, alias)
+        att, during, skipped, after = self._recover_through(alias)
+        self.assertIsNone(during)
+        self.assertIn((att, "in-flight"), skipped)
+        self.assertEqual(after, gexec.COMMITTED)
+        self.assertEqual(self.led.row(att)["verdict"], gexec.COMMITTED)
+
+    def test_symlink_from_another_directory_shares_the_dispatch_lock(self):
+        other_dir = os.path.join(self.dir, "elsewhere")
+        os.makedirs(other_dir)
+        alias = os.path.join(other_dir, "authority-alias.db")
+        os.symlink(self.lp, alias)
+        att, during, skipped, after = self._recover_through(alias)
+        self.assertIsNone(during)
+        self.assertIn((att, "in-flight"), skipped)
+        self.assertEqual(after, gexec.COMMITTED)
+
+    def test_hard_linked_ledger_fails_closed(self):
+        # Hard links (same or another directory) cannot be fenced by path, and SQLite
+        # does not support them; neither execution nor recovery proceeds through one.
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        other_dir = os.path.join(self.dir, "elsewhere")
+        os.makedirs(other_dir)
+        alias = os.path.join(other_dir, "authority-hardlink.db")
+        os.link(self.lp, alias)
+        out = self.ex.execute(action, env)
+        self.assertEqual((out.status, out.reason), ("REJECTED", "attempt-lock-unavailable"))
+        self.assertEqual(self.world.count(att), 0)
+        chk = gexec.verify_grant(env, self.auth.pub, action)
+        self.assertEqual(self.led.consume_nonce_and_claim(
+            chk.grant.nonce, att, grant=chk.grant, grant_env=chk.envelope), "ok")
+        aliased = gexec.GovernedExecutor(gexec.AuthorityLedger(alias),
+                                         gexec.ExternalWorld(self.wp), self.auth.pub, self.ep)
+        self.assertEqual(aliased.recover(), [])
+        self.assertIn((att, "lock-unusable"), aliased.last_recovery_skipped)
+
+    def test_recovery_in_another_process_via_alias_path_is_fenced(self):
+        # Same-host, cross-PROCESS: a separate interpreter recovers through a symlinked
+        # path while this process holds the attempt mid-dispatch.
+        alias = os.path.join(self.dir, "alias.db")
+        os.symlink(self.lp, alias)
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        paused, resume, out = threading.Event(), threading.Event(), {}
+
+        def hold(point):
+            if point == "after_dispatch_authorized":
+                paused.set()
+                resume.wait(30)
+
+        worker = threading.Thread(target=lambda: out.setdefault("o", self.ex.execute(
+            action, env, crash_hook=hold, provider_fault="lose_response_after_commit")))
+        worker.start()
+        self.assertTrue(paused.wait(10))
+        script = (
+            "import json, sys; sys.path.insert(0, sys.argv[1]); import gexec\n"
+            "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey, Ed25519PrivateKey\n"
+            "ex = gexec.GovernedExecutor(gexec.AuthorityLedger(sys.argv[2]), gexec.ExternalWorld(sys.argv[3]),"
+            " Ed25519PublicKey.from_public_bytes(bytes.fromhex(sys.argv[4])),"
+            " Ed25519PrivateKey.from_private_bytes(bytes.fromhex(sys.argv[5])))\n"
+            "print(json.dumps({'resolved': ex.recover(), 'skipped': ex.last_recovery_skipped}))\n")
+        proc = subprocess.run(
+            [sys.executable, "-c", script, HERE, alias, self.wp,
+             self.ap.public_key().public_bytes_raw().hex(), self.ep.private_bytes_raw().hex()],
+            capture_output=True, text=True, timeout=60)
+        resume.set()
+        worker.join(10)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report["resolved"], [])
+        self.assertIn([att, "in-flight"], report["skipped"])
+        self.assertEqual(out["o"].status, "UNKNOWN")
+        self.assertEqual(dict(self.ex.recover()).get(att), gexec.COMMITTED)
+        self.assertEqual(self.world.count(att), 1)
+
+
+class TestOutOfBandCloseAfterDispatchAuthorized(Base):
+    def test_late_out_of_band_close_never_yields_a_contradictory_receipt(self):
+        # A close that races an already-authorised dispatch cannot stop the effect;
+        # the executor must then report UNKNOWN, write NO committed receipt, and the
+        # independent verifier must surface the contradiction.
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+
+        def close_late(point):
+            if point == "after_dispatch_authorized":
+                self.led.finalize(att, gexec.CLOSED, gexec.KNOWN_NOT_DISPATCHED)
+
+        out = self.ex.execute(action, env, crash_hook=close_late)
+        self.assertEqual((out.status, out.reason), ("UNKNOWN", "finalize-fenced"))
+        self.assertEqual(self.world.count(att), 1)
+        self.assertEqual([r for r in self.led.all_receipts() if r["attempt_id"] == att], [])
+        inv = {i.name: i.ok for i in gexec.independent_verify(
+            self.led, self.world, self.auth.pub, self.ep.public_key())}
+        self.assertFalse(inv["no_effect_for_not_dispatched"])
+
+
+class TestAdmissionTiming(Base):
+    def test_replay_is_rejected_without_waiting_for_an_in_flight_dispatch(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        paused, resume = threading.Event(), threading.Event()
+
+        def hold(point):
+            if point == "after_dispatch_authorized":
+                paused.set()
+                resume.wait(10)
+
+        worker = threading.Thread(target=lambda: self.ex.execute(action, env, crash_hook=hold))
+        worker.start()
+        self.assertTrue(paused.wait(10))
+        t0 = time.monotonic()
+        dup = self.ex.execute(action, env)
+        waited = time.monotonic() - t0
+        resume.set()
+        worker.join(10)
+        self.assertEqual((dup.status, dup.reason), ("REJECTED", "replay-nonce"))
+        self.assertLess(waited, 2.0)
+        self.assertEqual(self.world.count(att), 1)
+
+    def test_grant_expiring_while_waiting_for_the_lock_is_rejected(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action, ttl_s=1.0)
+        holder = gexec.GovernedExecutor(gexec.AuthorityLedger(self.lp),
+                                        gexec.ExternalWorld(self.wp), self.auth.pub, self.ep)
+        held, release = threading.Event(), threading.Event()
+
+        def hold_lock():
+            with holder._attempt_lock(att, 5.0) as lock:
+                assert lock == "acquired"
+                held.set()
+                release.wait(10)
+
+        t = threading.Thread(target=hold_lock)
+        t.start()
+        self.assertTrue(held.wait(10))
+        threading.Timer(1.6, release.set).start()
+        out = self.ex.execute(action, env)          # verifies fresh, then waits ~1.6 s
+        t.join(10)
+        self.assertEqual((out.status, out.reason), ("REJECTED", "grant-expired"))
+        self.assertEqual(self.world.count(att), 0)
+
+
+class TestUnusableLockFile(Base):
+    def test_unusable_lock_rejects_execute_and_skips_only_that_attempt_in_recovery(self):
+        action = {"op": "charge", "amount": 100}
+        env_x, att_x = self.grant(action)
+        env_y, att_y = self.grant(action)
+        for env in (env_x, env_y):
+            chk = gexec.verify_grant(env, self.auth.pub, action)
+            self.assertEqual(self.led.consume_nonce_and_claim(
+                chk.grant.nonce, chk.grant.attempt_id, grant=chk.grant, grant_env=chk.envelope), "ok")
+        with open(self.ex._lock_path(att_x), "wb") as f:
+            f.write(b"this is not a sqlite database" * 64)
+        fresh = self.auth.issue(proposal_id="p", action=action, target="svc://pay",
+                                allowance_id="al", attempt_id=att_x, nonce="n-" + secrets.token_hex(6))
+        out = self.ex.execute(action, fresh)
+        self.assertEqual((out.status, out.reason), ("REJECTED", "attempt-lock-unavailable"))
+        resolved = dict(self.ex.recover())
+        self.assertEqual(resolved.get(att_y), gexec.KNOWN_NOT_DISPATCHED)   # pass not aborted
+        self.assertIn((att_x, "lock-unusable"), self.ex.last_recovery_skipped)
+
+
+class TestMalformedEnvelopes(Base):
+    def test_malformed_envelopes_are_rejected_not_raised(self):
+        action = {"op": "charge", "amount": 100}
+        for env in ({"signatures": ["x"]},
+                    {"payloadType": gexec.GRANT_TYPE, "payload": 1, "signatures": ["x"]},
+                    {"payloadType": gexec.GRANT_TYPE, "payload": "{}", "signatures": [{}]},
+                    ["not", "a", "mapping"]):
+            out = self.ex.execute(action, env)
+            self.assertEqual(out.status, "REJECTED", env)
 
 
 if __name__ == "__main__":
