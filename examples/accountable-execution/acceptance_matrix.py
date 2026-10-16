@@ -140,7 +140,7 @@ def cat_B():
     for t in ts: t.join()
     commits = sum(1 for o in outs if o.status == "COMMITTED")
     losers_truthful = all(o.status == "REJECTED" for o in outs if o.status != "COMMITTED")
-    record("B1", "at-most-once", "N concurrent identical requests -> exactly 1 effect; losers truthful",
+    record("B1", "at-most-once", "N concurrent identical requests (same grant+nonce) -> exactly 1 effect; losers truthful",
            commits == 1 and world.count(att) == 1 and losers_truthful,
            f"commits={commits} effects={world.count(att)} losers_truthful={losers_truthful}")
 
@@ -320,9 +320,134 @@ def cat_F():
     shutil.rmtree(d, ignore_errors=True)
 
 
+# ----------------------------------------------------------------- review round 4
+def cat_round4():
+    """Rows for exact-head review 6202502011: verified-grant snapshot, grant/ledger
+    binding, distinct-nonce claim CAS, execution/recovery fencing, receipt semantics."""
+    action = {"op": "charge", "amount": 300, "to": "acct-r4"}
+
+    # A8: an envelope whose payload changes between reads cannot redirect dispatch
+    d, ap, ep, auth, led, world, ex = env()
+    g, att = grant(auth, led, action)
+    injected = json.loads(g["payload"]); injected["target"] = "svc://evil"
+
+    class Shifting(dict):
+        reads = 0
+
+        def __getitem__(self, key):
+            if key == "payload":
+                Shifting.reads += 1
+                if Shifting.reads > 1:
+                    return gexec.canon(injected).decode()
+            return super().__getitem__(key)
+
+    o = ex.execute(action, Shifting(g))
+    eff = world.get(att)
+    record("A8", "authority", "grant payload changes after verification -> only the signed target is dispatched",
+           o.status == "COMMITTED" and eff is not None and eff["target"] == "svc://pay",
+           f"status={o.status} dispatched_target={eff and eff['target']}")
+
+    # A9: a validly signed grant whose identity differs from the registered authority
+    g9 = auth.issue(proposal_id="p", action=action, target="svc://other", allowance_id="al",
+                    attempt_id=att + "-r", nonce="n-" + secrets.token_hex(6))
+    led.register(auth.issue(proposal_id="p", action=action, target="svc://pay", allowance_id="al",
+                            attempt_id=att + "-r", nonce="n-" + secrets.token_hex(6)))
+    o = ex.execute(action, g9)
+    record("A9", "authority", "signed grant disagrees with registered authority row -> deny, 0 effects",
+           o.status == "REJECTED" and o.reason == "grant-authority-mismatch" and world.count(att + "-r") == 0,
+           f"{o.reason}; effects={world.count(att + '-r')}")
+    shutil.rmtree(d, ignore_errors=True)
+
+    # B4: distinct signed nonces sharing ONE attempt isolate the claim compare-and-swap
+    d, ap, ep, auth, led, world, ex = env()
+    g, att = grant(auth, led, action)
+    contenders = [g] + [grant(auth, led, action, register=False, attempt=att)[0] for _ in range(15)]
+    outs = [None] * len(contenders)
+    b = threading.Barrier(len(contenders))
+
+    def run(i):
+        b.wait()
+        outs[i] = ex.execute(action, contenders[i])
+    ts = [threading.Thread(target=run, args=(i,)) for i in range(len(contenders))]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    commits = sum(1 for o in outs if o.status == "COMMITTED")
+    losers_ok = all(o.reason == "not-available-or-already-claimed" for o in outs if o.status != "COMMITTED")
+    nonces = len({json.loads(c["payload"])["nonce"] for c in contenders})
+    record("B4", "at-most-once", "16 distinct signed nonces, one attempt -> claim CAS admits exactly 1",
+           commits == 1 and losers_ok and nonces == 16 and world.count(att) == 1,
+           f"nonces={nonces} commits={commits} losers_not_claimable={losers_ok} effects={world.count(att)}")
+    shutil.rmtree(d, ignore_errors=True)
+
+    # C6: recovery overlapping a live dispatch whose provider commits but loses the response
+    d, ap, ep, auth, led, world, ex = env()
+    g, att = grant(auth, led, action)
+    paused, resume = threading.Event(), threading.Event()
+
+    def hold(point):
+        if point == "after_dispatch_authorized":
+            paused.set(); resume.wait(10)
+    res = {}
+    w = threading.Thread(target=lambda: res.setdefault("o", ex.execute(
+        action, g, crash_hook=hold, provider_fault="lose_response_after_commit")))
+    w.start(); paused.wait(10)
+    rec = gexec.GovernedExecutor(gexec.AuthorityLedger(led.path), gexec.ExternalWorld(world.path), auth.pub, ep)
+    during = dict(rec.recover()).get(att)
+    resume.set(); w.join(10)
+    after = dict(rec.recover()).get(att)
+    final = gexec.AuthorityLedger(led.path).row(att)["verdict"]
+    record("C6", "crash", "recovery overlaps live dispatch + lost response -> skipped, then COMMITTED by readback",
+           during is None and res["o"].status == "UNKNOWN" and after == gexec.COMMITTED
+           and final == gexec.COMMITTED and world.count(att) == 1,
+           f"during={during} exec={res['o'].status} after={after} final={final} effects={world.count(att)}")
+
+    # C7: an out-of-band close after claim fences the dispatch (CAS-checked transition)
+    g7, att7 = grant(auth, led, action)
+    o = ex.execute(action, g7, crash_hook=lambda p: (
+        led.finalize(att7, gexec.CLOSED, gexec.KNOWN_NOT_DISPATCHED) if p == "after_claim" else None))
+    record("C7", "crash", "attempt closed out of band after claim -> dispatch fenced, 0 effects",
+           o.status == "REJECTED" and o.reason == "fenced-before-dispatch" and world.count(att7) == 0,
+           f"{o.reason}; effects={world.count(att7)}")
+    shutil.rmtree(d, ignore_errors=True)
+
+    def receipt_consistent(led, world, auth, ep):
+        return {i.name: i.ok for i in gexec.independent_verify(
+            led, world, auth.pub, ep.public_key())}["every_receipt_consistent_with_ledger_and_grant"]
+
+    # E5: receipt and effect agree with each other but not with the signed grant
+    d, ap, ep, auth, led, world, ex = env()
+    g, att = grant(auth, led, action)
+    claimed = json.loads(g["payload"]); claimed["target"] = "svc://other"
+    world.apply(att, att, "svc://other", gexec.canon(action))
+    led.record_receipt(att, ex._receipt(claimed, world.get(att)["effect_id"], gexec.COMMITTED))
+    led.finalize(att, gexec.CLOSED, gexec.COMMITTED)
+    record("E5", "tamper", "receipt target disagrees with the signed grant -> verifier detects",
+           not receipt_consistent(led, world, auth, ep), "verifier flagged receipt/grant disagreement")
+    shutil.rmtree(d, ignore_errors=True)
+
+    # E6: validly signed non-COMMITTED receipt contradicting a committed ledger/effect
+    d, ap, ep, auth, led, world, ex = env()
+    g, att = grant(auth, led, action)
+    ex.execute(action, g)
+    c = led._conn(); c.execute("DELETE FROM receipts WHERE attempt_id=?", (att,)); c.commit(); c.close()
+    led.record_receipt(att, ex._receipt(json.loads(g["payload"]), "none", gexec.KNOWN_NOT_DISPATCHED))
+    record("E6", "tamper", "signed non-COMMITTED receipt contradicts committed ledger/effect -> detected",
+           not receipt_consistent(led, world, auth, ep), "verifier flagged verdict/effect disagreement")
+
+    # E7: receipt for attempt X stored under attempt Y (identity swap)
+    gx, ax = grant(auth, led, action); gy, ay = grant(auth, led, action)
+    ex.execute(action, gx); ex.execute(action, gy)
+    rx = [r for r in led.all_receipts() if r["attempt_id"] == ax][0]["envelope"]
+    c = led._conn(); c.execute("UPDATE receipts SET envelope=? WHERE attempt_id=?", (rx, ay)); c.commit(); c.close()
+    record("E7", "tamper", "receipt stored under another attempt's identity -> detected",
+           not receipt_consistent(led, world, auth, ep), "verifier flagged identity swap")
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
-    for fn in (cat_A, cat_B, cat_C, cat_D, cat_E, cat_F):
+    for fn in (cat_A, cat_B, cat_C, cat_D, cat_E, cat_F, cat_round4):
         fn()
+    ROWS.sort(key=lambda r: (r["id"][0], int(r["id"][1:])))   # family, then number
     width = max(len(r["description"]) for r in ROWS)
     print("ACCOUNTABLE EXECUTION — falsifiable acceptance matrix (reference implementation)")
     print("Under the explicit assumptions in README.md. Not a claim about a deployed system.\n")

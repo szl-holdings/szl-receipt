@@ -18,7 +18,7 @@ Property 1 — wrong-digest / expired / replayed grants cause ZERO new effects
   [PASS] replay produced no SECOND effect (exactly 1 total)
 
 Property 2 — concurrent attempts produce AT MOST ONE effect
-  [PASS] 24 concurrent attempts -> exactly 1 commit  — commits=1
+  [PASS] 24 concurrent same-grant/same-nonce attempts (replay contention) -> exactly 1 commit  — commits=1
   [PASS] exactly 1 external effect  — effects=1
   [PASS] external idempotency layer: exactly 1 effect under N writers  — created=1 effects=1
 
@@ -49,6 +49,9 @@ Property 4 — an independent verifier reconciles receipts with external state
   [PASS] invariant: every_committed_receipt_backed_by_effect  — bad receipts: []
   [PASS] invariant: all_grants_authorizer_signed  — bad grants: []
   [PASS] invariant: no_consumed_nonce_with_available_attempt  — stranded attempts: []
+  [PASS] invariant: grant_identity_bound_to_ledger  — unbound grants: []
+  [PASS] invariant: every_receipt_consistent_with_ledger_and_grant  — inconsistent receipts: []
+  [PASS] invariant: every_committed_verdict_has_receipt  — committed without receipt: []
   [PASS] detects a forged effect with no authority
   [PASS] detects a tampered receipt (signature breaks)
 
@@ -58,8 +61,16 @@ Property 5 — action snapshot, effect-identity reconciliation, atomic nonce+cla
   [PASS] crash after atomic nonce+claim -> CLAIMED, not stranded, recoverable
   [PASS] detects effect-content tamper after commit
 
+Property 6 — verified-grant snapshot, claim CAS, recovery fencing, receipt semantics
+  [PASS] grant payload changed after verification -> only the signed target dispatched  — dispatched=svc://pay/charge
+  [PASS] 16 distinct signed nonces on one attempt -> claim CAS admits exactly 1  — commits=1 effects=1
+  [PASS] recovery overlapping a live dispatch + lost response -> skipped, then COMMITTED  — during=None after=COMMITTED effects=1
+  [PASS] attempt closed out of band after claim -> dispatch fenced, 0 effects  — fenced-before-dispatch
+  [PASS] detects a receipt that disagrees with the signed grant
+  [PASS] detects a signed non-COMMITTED receipt contradicting the ledger/effect
+
 ========================================================================
-40/40 checks passed in 0.75s
+49/49 checks passed in 2.11s
 ALL CHECKS PASSED — properties hold in this reference implementation,
 under the explicit assumptions in README.md. Not a claim about any
 deployed system; see 'What this does and does not establish'.
@@ -74,16 +85,26 @@ test_expired_grant_is_rejected_with_zero_effects (test_negative.TestAuthorityExa
 test_forged_grant_signature_is_rejected (test_negative.TestAuthorityExactAndSingleUse.test_forged_grant_signature_is_rejected) ... ok
 test_replay_produces_no_second_effect (test_negative.TestAuthorityExactAndSingleUse.test_replay_produces_no_second_effect) ... ok
 test_wrong_digest_is_rejected_with_zero_effects (test_negative.TestAuthorityExactAndSingleUse.test_wrong_digest_is_rejected_with_zero_effects) ... ok
-test_concurrent_attempts_produce_at_most_one_effect (test_negative.TestConcurrency.test_concurrent_attempts_produce_at_most_one_effect) ... ok
+test_concurrent_attempts_produce_at_most_one_effect (test_negative.TestConcurrency.test_concurrent_attempts_produce_at_most_one_effect)
+Same grant and same nonce from every contender: replay/claim contention. ... ok
 test_crash_after_effect_commits_exactly_once (test_negative.TestCrashNeverFakesSuccess.test_crash_after_effect_commits_exactly_once) ... ok
 test_crash_before_effect_is_not_committed (test_negative.TestCrashNeverFakesSuccess.test_crash_before_effect_is_not_committed) ... ok
+test_distinct_signed_nonces_sharing_one_attempt_claim_exactly_once (test_negative.TestDistinctNonceContention.test_distinct_signed_nonces_sharing_one_attempt_claim_exactly_once) ... ok
 test_existing_key_with_different_content_is_not_committed (test_negative.TestEffectIdentityReconciliation.test_existing_key_with_different_content_is_not_committed) ... ok
 test_tampered_effect_content_is_detected_by_verifier (test_negative.TestEffectIdentityReconciliation.test_tampered_effect_content_is_detected_by_verifier) ... ok
+test_out_of_band_close_after_claim_fences_dispatch (test_negative.TestExecutionRecoveryFencing.test_out_of_band_close_after_claim_fences_dispatch) ... ok
+test_recovery_overlapping_live_claim_is_skipped (test_negative.TestExecutionRecoveryFencing.test_recovery_overlapping_live_claim_is_skipped) ... ok
+test_recovery_overlapping_live_dispatch_does_not_lose_a_committed_effect (test_negative.TestExecutionRecoveryFencing.test_recovery_overlapping_live_dispatch_does_not_lose_a_committed_effect) ... ok
 test_forged_effect_without_authority_is_detected (test_negative.TestIndependentVerifierDetectsTampering.test_forged_effect_without_authority_is_detected) ... ok
 test_tampered_receipt_is_detected (test_negative.TestIndependentVerifierDetectsTampering.test_tampered_receipt_is_detected) ... ok
+test_receipt_identity_swap_is_detected (test_negative.TestReceiptSemantics.test_receipt_identity_swap_is_detected) ... ok
+test_signed_grant_and_receipt_target_disagreement_is_detected (test_negative.TestReceiptSemantics.test_signed_grant_and_receipt_target_disagreement_is_detected) ... ok
+test_signed_non_committed_receipt_mismatch_is_detected (test_negative.TestReceiptSemantics.test_signed_non_committed_receipt_mismatch_is_detected) ... ok
+test_envelope_changing_between_reads_cannot_redirect_dispatch (test_negative.TestVerifiedGrantSnapshot.test_envelope_changing_between_reads_cannot_redirect_dispatch) ... ok
+test_grant_identity_must_match_registered_authority (test_negative.TestVerifiedGrantSnapshot.test_grant_identity_must_match_registered_authority) ... ok
 
 ----------------------------------------------------------------------
-Ran 13 tests in 0.580s
+Ran 22 tests in 1.984s
 
 OK
 (exit 0)
@@ -100,21 +121,29 @@ Under the explicit assumptions in README.md. Not a claim about a deployed system
   PASS  A5  [authority     ] replayed/consumed grant -> second denied, exactly 1 effect                                        — first=COMMITTED second=replay-nonce; effects=1
   PASS  A6  [authority     ] forged grant signature -> deny, 0 effects                                                         — grant-signature-invalid; effects=0
   PASS  A7  [authority     ] action mutated after validation -> snapshot dispatched, not the mutation                          — status=COMMITTED effect==authorized=True mutated=True
-  PASS  B1  [at-most-once  ] N concurrent identical requests -> exactly 1 effect; losers truthful                              — commits=1 effects=1 losers_truthful=True
+  PASS  A8  [authority     ] grant payload changes after verification -> only the signed target is dispatched                  — status=COMMITTED dispatched_target=svc://pay
+  PASS  A9  [authority     ] signed grant disagrees with registered authority row -> deny, 0 effects                           — grant-authority-mismatch; effects=0
+  PASS  B1  [at-most-once  ] N concurrent identical requests (same grant+nonce) -> exactly 1 effect; losers truthful           — commits=1 effects=1 losers_truthful=True
   PASS  B2  [at-most-once  ] different payloads, same idempotency key -> exactly 1 effect                                      — created=(True,False) effects=1
   PASS  B3  [at-most-once  ] existing key, different target/payload -> not COMMITTED (conflict)                                — status=REJECTED reason=idempotency-key-conflict verdict=EFFECT_CONFLICT
+  PASS  B4  [at-most-once  ] 16 distinct signed nonces, one attempt -> claim CAS admits exactly 1                              — nonces=16 commits=1 losers_not_claimable=True effects=1
   PASS  C1  [crash         ] hard crash @ after_claim -> never a false success; resolved by external readback                  — crashed=True verdict=KNOWN_NOT_DISPATCHED effects=0 no_false_success=True
   PASS  C2  [crash         ] hard crash @ after_dispatch_authorized -> never a false success; resolved by external readback    — crashed=True verdict=KNOWN_NOT_DISPATCHED effects=0 no_false_success=True
   PASS  C3  [crash         ] hard crash @ after_effect_before_receipt -> never a false success; resolved by external readback  — crashed=True verdict=COMMITTED effects=1 no_false_success=True
   PASS  C4  [crash         ] hard crash @ after_close_before_return -> never a false success; resolved by external readback    — crashed=True closed=CLOSED effects=1 receipts(pre)=1
   PASS  C5  [crash         ] crash after atomic nonce+claim -> CLAIMED & recoverable, never stranded AVAILABLE                 — crashed=True state=CLAIMED no_stranded=True verdict=KNOWN_NOT_DISPATCHED
+  PASS  C6  [crash         ] recovery overlaps live dispatch + lost response -> skipped, then COMMITTED by readback            — during=None exec=UNKNOWN after=COMMITTED final=COMMITTED effects=1
+  PASS  C7  [crash         ] attempt closed out of band after claim -> dispatch fenced, 0 effects                              — fenced-before-dispatch; effects=0
   PASS  D1  [provider-fault] provider fails before commit -> UNKNOWN; recovery -> not dispatched, 0 effects                    — provider-unavailable: provider error before commit; effects=0; verdict=KNOWN_NOT_DISPATCHED
   PASS  D2  [provider-fault] provider commits but response lost -> UNKNOWN; recovery confirms by readback, 1 effect            — provider-unavailable: response lost after commit; effects=1; verdict=COMMITTED
   PASS  E1  [tamper        ] forged external effect with no authority -> verifier detects                                      — verifier flagged unauthorized effect
   PASS  E2  [tamper        ] tampered receipt bytes -> signature verification fails                                            — verifier rejected tampered receipt
   PASS  E3  [lying-executor] executor claims COMMITTED but no external effect -> verifier detects                              — verifier rejected a committed receipt with no backing effect
   PASS  E4  [tamper        ] external effect content altered after commit -> verifier detects                                  — verifier flagged effect-content mismatch
+  PASS  E5  [tamper        ] receipt target disagrees with the signed grant -> verifier detects                                — verifier flagged receipt/grant disagreement
+  PASS  E6  [tamper        ] signed non-COMMITTED receipt contradicts committed ledger/effect -> detected                      — verifier flagged verdict/effect disagreement
+  PASS  E7  [tamper        ] receipt stored under another attempt's identity -> detected                                       — verifier flagged identity swap
   PASS  F1  [positive      ] authorized path -> exactly one real effect, correct binding, verifier clean                       — status=COMMITTED effects=1 invariants_all_ok=True
 
-22/22 acceptance rows pass.
+30/30 acceptance rows pass.
 (exit 0)

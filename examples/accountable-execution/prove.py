@@ -1,6 +1,6 @@
 """Proof harness for the accountable-execution guarantee.
 
-Runs five properties, each with the adversary/negative control that would break a
+Runs six properties, each with the adversary/negative control that would break a
 naive implementation, and an independent verifier that reconciles signed receipts
 against the real external world. Exit 0 iff every property and invariant holds.
 
@@ -113,7 +113,8 @@ def property_2_concurrency_at_most_one():
     for t in threads: t.join()
 
     commits = sum(1 for o in outs if o and o.status == "COMMITTED")
-    check(f"{N} concurrent attempts -> exactly 1 commit", commits == 1, f"commits={commits}")
+    check(f"{N} concurrent same-grant/same-nonce attempts (replay contention) -> exactly 1 commit",
+          commits == 1, f"commits={commits}")
     check("exactly 1 external effect", world.count(att) == 1, f"effects={world.count(att)}")
 
     # second layer, independently: bypass the claim, hammer the external world's
@@ -319,6 +320,108 @@ def property_5_composition_integrity():
         shutil.rmtree(x, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ property 6
+def property_6_grant_binding_and_recovery_fencing():
+    print("\nProperty 6 — verified-grant snapshot, claim CAS, recovery fencing, receipt semantics")
+    ap, ep = keys()
+    auth = gexec.Authorizer(ap, "policy-v1")
+
+    def fresh_stack():
+        d, lp, wp = fresh()
+        led, world = gexec.AuthorityLedger(lp), gexec.ExternalWorld(wp)
+        return d, led, world, gexec.GovernedExecutor(led, world, auth.pub, ep)
+
+    def receipts_consistent(led, world):
+        return {i.name: i.ok for i in gexec.independent_verify(
+            led, world, auth.pub, ep.public_key())}["every_receipt_consistent_with_ledger_and_grant"]
+
+    a = {"op": "charge", "amount": 77, "to": "acct-6"}
+    dirs = []
+
+    # 6a: an envelope whose payload changes between reads cannot redirect dispatch
+    d, led, world, ex = fresh_stack(); dirs.append(d)
+    env, att = new_grant(auth, a); led.register(env)
+    injected = json.loads(env["payload"]); injected["target"] = "svc://evil"
+
+    class Shifting(dict):
+        reads = 0
+
+        def __getitem__(self, key):
+            if key == "payload":
+                Shifting.reads += 1
+                if Shifting.reads > 1:
+                    return gexec.canon(injected).decode()
+            return super().__getitem__(key)
+
+    out = ex.execute(a, Shifting(env))
+    check("grant payload changed after verification -> only the signed target dispatched",
+          out.status == "COMMITTED" and world.get(att)["target"] == "svc://pay/charge",
+          f"dispatched={world.get(att)['target']}")
+
+    # 6b: distinct signed nonces sharing one attempt isolate the claim CAS
+    d, led, world, ex = fresh_stack(); dirs.append(d)
+    env, att = new_grant(auth, a); led.register(env)
+    contenders = [env] + [new_grant(auth, a, attempt=att)[0] for _ in range(15)]
+    outs = [None] * len(contenders)
+    barrier = threading.Barrier(len(contenders))
+
+    def run(i):
+        barrier.wait()
+        outs[i] = ex.execute(a, contenders[i])
+    ts = [threading.Thread(target=run, args=(i,)) for i in range(len(contenders))]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    commits = sum(1 for o in outs if o.status == "COMMITTED")
+    check("16 distinct signed nonces on one attempt -> claim CAS admits exactly 1",
+          commits == 1 and world.count(att) == 1, f"commits={commits} effects={world.count(att)}")
+
+    # 6c: recovery overlapping a live dispatch whose provider commits but loses the response
+    d, led, world, ex = fresh_stack(); dirs.append(d)
+    env, att = new_grant(auth, a); led.register(env)
+    paused, resume, res = threading.Event(), threading.Event(), {}
+
+    def hold(point):
+        if point == "after_dispatch_authorized":
+            paused.set(); resume.wait(10)
+    w = threading.Thread(target=lambda: res.setdefault("o", ex.execute(
+        a, env, crash_hook=hold, provider_fault="lose_response_after_commit")))
+    w.start(); paused.wait(10)
+    rec = gexec.GovernedExecutor(gexec.AuthorityLedger(led.path), gexec.ExternalWorld(world.path), auth.pub, ep)
+    during = dict(rec.recover()).get(att)
+    resume.set(); w.join(10)
+    after = dict(rec.recover()).get(att)
+    check("recovery overlapping a live dispatch + lost response -> skipped, then COMMITTED",
+          during is None and after == gexec.COMMITTED and world.count(att) == 1,
+          f"during={during} after={after} effects={world.count(att)}")
+
+    # 6d: an out-of-band close after claim fences the dispatch
+    env, att = new_grant(auth, a); led.register(env)
+    out = ex.execute(a, env, crash_hook=lambda p: (
+        led.finalize(att, gexec.CLOSED, gexec.KNOWN_NOT_DISPATCHED) if p == "after_claim" else None))
+    check("attempt closed out of band after claim -> dispatch fenced, 0 effects",
+          out.reason == "fenced-before-dispatch" and world.count(att) == 0, out.reason)
+
+    # 6e: receipt and effect agree with each other but not with the signed grant
+    d, led, world, ex = fresh_stack(); dirs.append(d)
+    env, att = new_grant(auth, a); led.register(env)
+    claimed = json.loads(env["payload"]); claimed["target"] = "svc://other"
+    world.apply(att, att, "svc://other", gexec.canon(a))
+    led.record_receipt(att, ex._receipt(claimed, world.get(att)["effect_id"], gexec.COMMITTED))
+    led.finalize(att, gexec.CLOSED, gexec.COMMITTED)
+    check("detects a receipt that disagrees with the signed grant", not receipts_consistent(led, world))
+
+    # 6f: validly signed non-COMMITTED receipt contradicting a committed ledger/effect
+    d, led, world, ex = fresh_stack(); dirs.append(d)
+    env, att = new_grant(auth, a); led.register(env); ex.execute(a, env)
+    c = led._conn(); c.execute("DELETE FROM receipts WHERE attempt_id=?", (att,)); c.commit(); c.close()
+    led.record_receipt(att, ex._receipt(json.loads(env["payload"]), "none", gexec.KNOWN_NOT_DISPATCHED))
+    check("detects a signed non-COMMITTED receipt contradicting the ledger/effect",
+          not receipts_consistent(led, world))
+
+    for x in dirs:
+        shutil.rmtree(x, ignore_errors=True)
+
+
 def main():
     t0 = time.time()
     print("=" * 72)
@@ -330,6 +433,7 @@ def main():
     property_3_crash_never_false_success()
     property_4_independent_verifier()
     property_5_composition_integrity()
+    property_6_grant_binding_and_recovery_fencing()
     ok = sum(results)
     total = len(results)
     print("\n" + "=" * 72)

@@ -84,6 +84,8 @@ class TestAuthorityExactAndSingleUse(Base):
 
 class TestConcurrency(Base):
     def test_concurrent_attempts_produce_at_most_one_effect(self):
+        """Same grant and same nonce from every contender: replay/claim contention.
+        TestDistinctNonceContention isolates the claim CAS with distinct nonces."""
         action = {"op": "charge", "amount": 100}
         env, att = self.grant(action)
         N = 24
@@ -219,6 +221,163 @@ class TestAtomicNonceClaim(Base):
         ex2 = gexec.GovernedExecutor(gexec.AuthorityLedger(self.lp),
                                      gexec.ExternalWorld(self.wp), self.auth.pub, self.ep)
         self.assertEqual(dict(ex2.recover()).get(att), gexec.KNOWN_NOT_DISPATCHED)
+
+
+def _issue(auth, action, attempt, *, target="svc://pay", nonce=None):
+    return auth.issue(proposal_id="p", action=action, target=target, allowance_id="al",
+                      attempt_id=attempt, nonce=nonce or "n-" + secrets.token_hex(6))
+
+
+class TestVerifiedGrantSnapshot(Base):
+    def test_envelope_changing_between_reads_cannot_redirect_dispatch(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        injected = json.loads(env["payload"])
+        injected["target"] = "svc://evil"
+
+        class Shifting(dict):
+            reads = 0
+
+            def __getitem__(self, key):
+                if key == "payload":
+                    Shifting.reads += 1
+                    if Shifting.reads > 1:
+                        return gexec.canon(injected).decode()
+                return super().__getitem__(key)
+
+        out = self.ex.execute(action, Shifting(env))
+        self.assertEqual(out.status, "COMMITTED")
+        self.assertEqual(self.world.get(att)["target"], "svc://pay")   # the signed target only
+        inv = {i.name: i.ok for i in gexec.independent_verify(
+            self.led, self.world, self.auth.pub, self.ep.public_key())}
+        self.assertTrue(all(inv.values()), inv)
+
+    def test_grant_identity_must_match_registered_authority(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)                                  # registered: svc://pay
+        other = _issue(self.auth, action, att, target="svc://other")   # validly signed, same attempt
+        out = self.ex.execute(action, other)
+        self.assertEqual((out.status, out.reason), ("REJECTED", "grant-authority-mismatch"))
+        self.assertEqual(self.world.count(att), 0)
+
+
+class TestReceiptSemantics(Base):
+    def _inv(self):
+        return {i.name: i.ok for i in gexec.independent_verify(
+            self.led, self.world, self.auth.pub, self.ep.public_key())}
+
+    def test_signed_grant_and_receipt_target_disagreement_is_detected(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        claimed = json.loads(env["payload"])
+        claimed["target"] = "svc://other"                  # receipt and effect agree with each other
+        self.world.apply(att, att, "svc://other", gexec.canon(action))
+        self.led.record_receipt(att, self.ex._receipt(claimed, self.world.get(att)["effect_id"],
+                                                      gexec.COMMITTED))
+        self.led.finalize(att, gexec.CLOSED, gexec.COMMITTED)
+        self.assertFalse(self._inv()["every_receipt_consistent_with_ledger_and_grant"])
+
+    def test_signed_non_committed_receipt_mismatch_is_detected(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        self.ex.execute(action, env)                       # ledger COMMITTED, one real effect
+        c = self.led._conn()
+        c.execute("DELETE FROM receipts WHERE attempt_id=?", (att,))
+        c.commit(); c.close()
+        self.led.record_receipt(att, self.ex._receipt(json.loads(env["payload"]), "none",
+                                                      gexec.KNOWN_NOT_DISPATCHED))
+        self.assertFalse(self._inv()["every_receipt_consistent_with_ledger_and_grant"])
+
+    def test_receipt_identity_swap_is_detected(self):
+        action = {"op": "charge", "amount": 100}
+        env_x, att_x = self.grant(action)
+        env_y, att_y = self.grant(action)
+        self.ex.execute(action, env_x)
+        self.ex.execute(action, env_y)
+        receipt_x = [r for r in self.led.all_receipts() if r["attempt_id"] == att_x][0]["envelope"]
+        c = self.led._conn()
+        c.execute("UPDATE receipts SET envelope=? WHERE attempt_id=?", (receipt_x, att_y))
+        c.commit(); c.close()
+        self.assertFalse(self._inv()["every_receipt_consistent_with_ledger_and_grant"])
+
+
+class TestExecutionRecoveryFencing(Base):
+    def _overlap(self, pause_point, **execute_kw):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        paused, resume = threading.Event(), threading.Event()
+
+        def hook(point):
+            if point == pause_point:
+                paused.set()
+                resume.wait(10)
+
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "out", self.ex.execute(action, env, crash_hook=hook, **execute_kw)))
+        worker.start()
+        self.assertTrue(paused.wait(10))
+        recoverer = gexec.GovernedExecutor(gexec.AuthorityLedger(self.lp),
+                                           gexec.ExternalWorld(self.wp), self.auth.pub, self.ep)
+        during = dict(recoverer.recover()).get(att)
+        resume.set()
+        worker.join(10)
+        return att, during, result["out"], recoverer
+
+    def test_recovery_overlapping_live_dispatch_does_not_lose_a_committed_effect(self):
+        # recovery runs while dispatch is in flight; the provider then commits but loses
+        # its response. The effect must still end COMMITTED, never KNOWN_NOT_DISPATCHED.
+        att, during, out, recoverer = self._overlap(
+            "after_dispatch_authorized", provider_fault="lose_response_after_commit")
+        self.assertIsNone(during)                          # live attempt skipped, not guessed
+        self.assertEqual(out.status, "UNKNOWN")
+        self.assertEqual(dict(recoverer.recover()).get(att), gexec.COMMITTED)
+        self.assertEqual(self.led.row(att)["verdict"], gexec.COMMITTED)
+        self.assertEqual(self.world.count(att), 1)
+
+    def test_recovery_overlapping_live_claim_is_skipped(self):
+        att, during, out, _ = self._overlap("after_claim")
+        self.assertIsNone(during)
+        self.assertEqual(out.status, "COMMITTED")
+        self.assertEqual(self.world.count(att), 1)
+
+    def test_out_of_band_close_after_claim_fences_dispatch(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+
+        def close_out_of_band(point):
+            if point == "after_claim":
+                self.led.finalize(att, gexec.CLOSED, gexec.KNOWN_NOT_DISPATCHED)
+
+        out = self.ex.execute(action, env, crash_hook=close_out_of_band)
+        self.assertEqual((out.status, out.reason), ("REJECTED", "fenced-before-dispatch"))
+        self.assertEqual(self.world.count(att), 0)
+
+
+class TestDistinctNonceContention(Base):
+    """Isolates the claim compare-and-swap: every contender holds a distinct, validly
+    signed nonce for the SAME attempt, so nonce de-duplication cannot be what
+    serialises them (kept separate from same-grant/same-nonce replay contention)."""
+
+    def test_distinct_signed_nonces_sharing_one_attempt_claim_exactly_once(self):
+        action = {"op": "charge", "amount": 100}
+        env, att = self.grant(action)
+        grants = [env] + [_issue(self.auth, action, att) for _ in range(15)]
+        self.assertEqual(len({json.loads(g["payload"])["nonce"] for g in grants}), 16)
+        outs = [None] * len(grants)
+        barrier = threading.Barrier(len(grants))
+
+        def run(i):
+            barrier.wait()
+            outs[i] = self.ex.execute(action, grants[i])
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in range(len(grants))]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertEqual(sum(o.status == "COMMITTED" for o in outs), 1)
+        self.assertTrue(all(o.reason == "not-available-or-already-claimed"
+                            for o in outs if o.status != "COMMITTED"))
+        self.assertEqual(self.world.count(att), 1)
 
 
 if __name__ == "__main__":

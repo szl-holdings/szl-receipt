@@ -52,9 +52,23 @@
       "evidence": "status=COMMITTED effect==authorized=True mutated=True"
     },
     {
+      "id": "A8",
+      "category": "authority",
+      "description": "grant payload changes after verification -> only the signed target is dispatched",
+      "label": "PASS",
+      "evidence": "status=COMMITTED dispatched_target=svc://pay"
+    },
+    {
+      "id": "A9",
+      "category": "authority",
+      "description": "signed grant disagrees with registered authority row -> deny, 0 effects",
+      "label": "PASS",
+      "evidence": "grant-authority-mismatch; effects=0"
+    },
+    {
       "id": "B1",
       "category": "at-most-once",
-      "description": "N concurrent identical requests -> exactly 1 effect; losers truthful",
+      "description": "N concurrent identical requests (same grant+nonce) -> exactly 1 effect; losers truthful",
       "label": "PASS",
       "evidence": "commits=1 effects=1 losers_truthful=True"
     },
@@ -71,6 +85,13 @@
       "description": "existing key, different target/payload -> not COMMITTED (conflict)",
       "label": "PASS",
       "evidence": "status=REJECTED reason=idempotency-key-conflict verdict=EFFECT_CONFLICT"
+    },
+    {
+      "id": "B4",
+      "category": "at-most-once",
+      "description": "16 distinct signed nonces, one attempt -> claim CAS admits exactly 1",
+      "label": "PASS",
+      "evidence": "nonces=16 commits=1 losers_not_claimable=True effects=1"
     },
     {
       "id": "C1",
@@ -106,6 +127,20 @@
       "description": "crash after atomic nonce+claim -> CLAIMED & recoverable, never stranded AVAILABLE",
       "label": "PASS",
       "evidence": "crashed=True state=CLAIMED no_stranded=True verdict=KNOWN_NOT_DISPATCHED"
+    },
+    {
+      "id": "C6",
+      "category": "crash",
+      "description": "recovery overlaps live dispatch + lost response -> skipped, then COMMITTED by readback",
+      "label": "PASS",
+      "evidence": "during=None exec=UNKNOWN after=COMMITTED final=COMMITTED effects=1"
+    },
+    {
+      "id": "C7",
+      "category": "crash",
+      "description": "attempt closed out of band after claim -> dispatch fenced, 0 effects",
+      "label": "PASS",
+      "evidence": "fenced-before-dispatch; effects=0"
     },
     {
       "id": "D1",
@@ -148,6 +183,27 @@
       "description": "external effect content altered after commit -> verifier detects",
       "label": "PASS",
       "evidence": "verifier flagged effect-content mismatch"
+    },
+    {
+      "id": "E5",
+      "category": "tamper",
+      "description": "receipt target disagrees with the signed grant -> verifier detects",
+      "label": "PASS",
+      "evidence": "verifier flagged receipt/grant disagreement"
+    },
+    {
+      "id": "E6",
+      "category": "tamper",
+      "description": "signed non-COMMITTED receipt contradicts committed ledger/effect -> detected",
+      "label": "PASS",
+      "evidence": "verifier flagged verdict/effect disagreement"
+    },
+    {
+      "id": "E7",
+      "category": "tamper",
+      "description": "receipt stored under another attempt's identity -> detected",
+      "label": "PASS",
+      "evidence": "verifier flagged identity swap"
     },
     {
       "id": "F1",
