@@ -59,7 +59,7 @@ Secondary (cost, reported with variance and hardware):
 
 `METADATA_ONLY · SOURCE_REVIEWED · TESTS_REPORTED · TESTS_REPRODUCED · RUNTIME_VERIFIED
 · NOT_RUN · BLOCKED · UNKNOWN`. This reference implementation is **TESTS_REPRODUCED**
-(49 checks, 49 unittests and 38 matrix rows as separate suites, rerun here). A deployed claim requires
+(49 checks, 53 unittests and 38 matrix rows as separate suites, rerun here). A deployed claim requires
 **RUNTIME_VERIFIED** against a real external-state oracle — explicitly out of scope here.
 
 ## 7. Matched conditions
