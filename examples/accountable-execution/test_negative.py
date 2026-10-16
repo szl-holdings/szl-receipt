@@ -715,6 +715,49 @@ class TestReviewRegressions(Base):
                 c.commit(); c.close()
                 self.assertIs(self.invariants()["all_grants_authorizer_signed"].ok, False)
 
+    def test_deeply_nested_stored_receipt_is_reported_not_raised(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        self.assertEqual(self.ex.execute(action, env).status, "COMMITTED")
+        raw = "[" * 10000 + "0" + "]" * 10000
+        c = self.led._conn()
+        try:
+            c.execute("UPDATE receipts SET envelope=? WHERE attempt_id=?", (raw, att))
+            c.commit()
+        finally:
+            c.close()
+        self.assertIs(self.invariants()["every_committed_receipt_backed_by_effect"].ok, False)
+
+    def test_deeply_nested_stored_grant_is_reported_not_raised(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        self.assertEqual(self.ex.execute(action, env).status, "COMMITTED")
+        raw = "[" * 10000 + "0" + "]" * 10000
+        c = self.led._conn()
+        try:
+            c.execute("UPDATE authority SET grant_env=? WHERE attempt_id=?", (raw, att))
+            c.commit()
+        finally:
+            c.close()
+        self.assertIs(self.invariants()["all_grants_authorizer_signed"].ok, False)
+
+    def test_deeply_nested_request_payload_is_rejected(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        env["payload"] = "[" * 10000 + "0" + "]" * 10000
+        self.assertEqual(self.ex.execute(action, env).status, "REJECTED")
+        self.assertEqual(self.world.count(att), 0)
+
+    def test_deeply_nested_signature_structure_is_rejected(self):
+        action = {"op": "charge", "amount": 1}
+        env, att = self.grant(action)
+        nested = None
+        for _ in range(10000):
+            nested = [nested]
+        env["signatures"] = nested
+        self.assertEqual(self.ex.execute(action, env).status, "REJECTED")
+        self.assertEqual(self.world.count(att), 0)
+
     def test_stale_receipt_prevents_atomic_close(self):
         action = {"op": "charge", "amount": 1}
         env, att = self.grant(action)
