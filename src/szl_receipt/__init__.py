@@ -77,7 +77,7 @@ from .pci import (
     verify_pci_receipt,
 )
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 __author__ = "SZL Contributors"
 __license__ = "Apache-2.0"
 
