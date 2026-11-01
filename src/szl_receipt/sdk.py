@@ -238,6 +238,8 @@ def verify_receipt(
     Returns:
         ``(True, "ok")`` when the binding holds AND the signature verifies.
         ``(False, "<reason>")`` otherwise. Never raises on a malformed input.
+        Bodies that cannot be serialized as canonical UTF-8 JSON reject as
+        ``body-canonicalization-error`` without echoing their values.
     """
     if not isinstance(receipt, dict):
         return (False, "not-a-receipt")
@@ -254,8 +256,15 @@ def verify_receipt(
     redigest = hashlib.sha256(payload_bytes).hexdigest()
 
     body = receipt.get("body")
-    if body is not None and canonical_json(body) != payload_bytes:
-        return (False, "body-payload-mismatch")
+    if body is not None:
+        try:
+            body_bytes = canonical_json(body)
+        except (TypeError, ValueError, RecursionError):
+            # Untrusted bodies may be cyclic, non-JSON, or contain lone
+            # surrogates. Reject without leaking their values or exceptions.
+            return (False, "body-canonicalization-error")
+        if body_bytes != payload_bytes:
+            return (False, "body-payload-mismatch")
 
     composite_digest = receipt.get("digest")
     if composite_digest is not None and composite_digest != redigest:
