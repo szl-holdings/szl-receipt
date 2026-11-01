@@ -38,14 +38,19 @@ def canonical_json(obj: object) -> bytes:
     Used as the single source of truth for hashing and DSSE payload encoding.
 
     Args:
-        obj: Any JSON-serialisable Python object.
+        obj: Any JSON-serialisable Python object containing only finite numbers.
 
     Returns:
         UTF-8 bytes with sorted keys and no extra whitespace.
+
+    Raises:
+        ValueError: If obj contains NaN or positive/negative infinity, including
+            inside nested collections. These values are not JSON numbers.
     """
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
-        "utf-8"
-    )
+    return json.dumps(
+        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def pae(payload_type: str, body: bytes) -> bytes:
