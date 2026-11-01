@@ -264,16 +264,22 @@ def verify_pci_receipt(
     Returns:
         A :class:`PCIResult`. ``ok`` is True only when every integrity/honesty
         check holds; the advisory Λ ≥ θ verdict is reported in ``advisory``.
+        After spine verification, non-object body/extra values reject as
+        ``not-a-pci-receipt``. Malformed spec containers or non-string claim /
+        invariant entries reject as ``spec-malformed``; ``locked_count`` must
+        be an integer (not a boolean) equal to the number of invariants.
     """
     ok, why = _verify_pcgi(composite, public_key_pem=public_key_pem)
-    body = (composite or {}).get("body") or {} if isinstance(composite, Mapping) else {}
     env = (composite or {}).get("envelope") or {} if isinstance(composite, Mapping) else {}
-    signed = bool(env.get("signed"))
+    signed = bool(env.get("signed")) if isinstance(env, Mapping) else False
     if not ok:
         return PCIResult(ok=False, reason=why, signed=signed)
 
+    body = (composite or {}).get("body") or {} if isinstance(composite, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return PCIResult(ok=False, reason="not-a-pci-receipt", signed=signed)
     extra = body.get("extra") or {}
-    if extra.get("pci_profile") != PCI_PROFILE:
+    if not isinstance(extra, Mapping) or extra.get("pci_profile") != PCI_PROFILE:
         return PCIResult(ok=False, reason="not-a-pci-receipt", signed=signed)
 
     # (3) energy honesty. The spine renders measured energy VERBATIM as
@@ -283,11 +289,15 @@ def verify_pci_receipt(
     energy = body.get("energy", UNAVAILABLE)
     if isinstance(energy, Mapping) and "joules" in energy:
         joules = energy.get("joules")
-        if (
-            isinstance(joules, bool)
-            or not isinstance(joules, (int, float))
-            or not math.isfinite(float(joules))
-        ):
+        try:
+            is_finite_real = (
+                not isinstance(joules, bool)
+                and isinstance(joules, (int, float))
+                and math.isfinite(float(joules))
+            )
+        except OverflowError:
+            is_finite_real = False
+        if not is_finite_real:
             return PCIResult(
                 ok=False, reason="energy-malformed", energy=UNAVAILABLE, signed=signed
             )
@@ -321,8 +331,21 @@ def verify_pci_receipt(
     # reworded overclaim survives; (c) invariants must be identifier tokens (not
     # prose); (d) tier must be known; (e) locked_count must match the list.
     spec = extra.get("spec") or {}
-    claims = [str(c) for c in (spec.get("claims") or [])]
-    invariants = [str(i) for i in (spec.get("invariants") or [])]
+    if not isinstance(spec, Mapping):
+        return PCIResult(
+            ok=False, reason="spec-malformed", energy=energy_label, signed=signed
+        )
+    claims = spec.get("claims", [])
+    invariants = spec.get("invariants", [])
+    if (
+        not isinstance(claims, (list, tuple))
+        or not isinstance(invariants, (list, tuple))
+        or any(not isinstance(claim, str) for claim in claims)
+        or any(not isinstance(inv, str) for inv in invariants)
+    ):
+        return PCIResult(
+            ok=False, reason="spec-malformed", energy=energy_label, signed=signed
+        )
     for token in (*claims, *invariants):
         code = FORBIDDEN_CLAIMS.get(token)
         if code:
@@ -343,7 +366,12 @@ def verify_pci_receipt(
         return PCIResult(
             ok=False, reason="spec-tier-unknown", energy=energy_label, signed=signed
         )
-    if spec.get("locked_count") != len(invariants):
+    locked_count = spec.get("locked_count")
+    if (
+        isinstance(locked_count, bool)
+        or not isinstance(locked_count, int)
+        or locked_count != len(invariants)
+    ):
         return PCIResult(
             ok=False, reason="spec-locked-count-mismatch",
             energy=energy_label, signed=signed,
