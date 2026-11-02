@@ -116,7 +116,10 @@ def main() -> int:
         if ep.is_file():
             ev = json.loads(ep.read_text())
             eval_prop = f"pass_rate={ev.get('pass_rate')} heldout_passed={ev.get('heldout_passed')}"
-            eligible = "true" if (ev.get("heldout_passed") and ev.get("refusal_no_regression")) else "false"
+            eligible = "true" if (
+                ev.get("heldout_passed") is True
+                and ev.get("refusal_no_regression") is True
+            ) else "false"
         else:
             print(f"::warning::eval file {ep} not found; szl:heldout_eval recorded as MISSING", file=sys.stderr)
 
