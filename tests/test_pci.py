@@ -244,12 +244,9 @@ def _signed_with_raw_lambda_verdict(lambda_verdict):
         (0.0, "advisory-fail"),   # θ is checked before the verdict, whichever verdict is bound
         (-0.0, "advisory-pass"),
         (-0.5, "advisory-pass"),
-        (float("-inf"), "advisory-pass"),
         (math.nextafter(1.0, 2.0), "advisory-fail"),
         (1.5, "advisory-fail"),
         (10**400, "advisory-fail"),
-        (float("nan"), "advisory-fail"),
-        (float("inf"), "advisory-fail"),
     ],
 )
 def test_verify_refuses_theta_outside_domain(theta, verdict):
@@ -258,6 +255,14 @@ def test_verify_refuses_theta_outside_domain(theta, verdict):
     assert res.ok is False
     assert res.reason.startswith("theta-invalid:")
     assert res.advisory is None
+
+
+@pytest.mark.parametrize("theta", [float("-inf"), float("nan"), float("inf")])
+def test_nonfinite_theta_is_rejected_before_signing(theta):
+    # Non-JSON numbers now fail at the shared serializer, before a signature
+    # can be issued. Finite out-of-domain theta still reaches the PCI verifier.
+    with pytest.raises(ValueError):
+        _signed_with_lambda_verdict({"a": 0.0, "b": 1.0}, 0.0, theta, "advisory-fail")
 
 
 def test_verify_refuses_zero_score_masking_an_invalid_score():
@@ -411,7 +416,7 @@ def test_emit_refuses_non_finite_energy():
         )
 
 
-def test_verify_refuses_handcrafted_nan_energy():
+def test_nonfinite_energy_is_rejected_before_signing_and_verification():
     # A joules key that isn't a finite real is a fabricated measurement.
     priv, pub = generate_keypair()
     extra = {
@@ -422,16 +427,17 @@ def test_verify_refuses_handcrafted_nan_energy():
         model_id="m", input_digest="i", output_digest="o", policy_id="p",
         organ="a11oy", private_key_pem=None, energy_joules=0.0, extra=extra,
     )
-    # The statement builder now refuses NaN predicates. Handcraft the malformed
-    # body below that boundary so this still exercises the PCI energy check,
-    # with a valid statement and a correctly bound test signature.
+    # Even bypassing the statement builder cannot issue a non-finite body:
+    # digest/signing reject at the shared canonical boundary. A malformed
+    # externally supplied body also fails before the PCI-specific energy check.
     r["body"]["energy"] = {"joules": float("nan"), "unit": "J"}
     raw = Receipt(kind=r["body"]["kind"], body=r["body"])
-    r["digest"] = raw.digest()
-    r["envelope"] = sign_receipt(raw, private_key_pem=priv, organ="a11oy")
-    r["statement"]["subject"][0]["digest"]["sha256"] = r["digest"]
+    with pytest.raises(ValueError):
+        raw.digest()
+    with pytest.raises(ValueError):
+        sign_receipt(raw, private_key_pem=priv, organ="a11oy")
     res = verify_pci_receipt(r, public_key_pem=pub)
-    assert res.ok is False and res.reason == "energy-malformed"
+    assert res.ok is False and res.reason == "body-canonicalization-error"
 
 
 def test_spine_emitter_refuses_nan_statement_metadata():

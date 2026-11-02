@@ -134,6 +134,13 @@ cosign verify-blob --key organ.pub \
   `verify_receipt` returns `(False, "unsigned-honest")` — NEVER a fake pass.
 - **One canonical hash:** SHA-256 over `canonical_json(body)` (sorted keys,
   compact separators, UTF-8). Resolves SHA3-vs-SHA256 drift.
+  Numeric values must be finite: hashing and emission raise `ValueError` for
+  `NaN` or positive/negative infinity at any nesting depth, including in keyless
+  mode. Receipt verification rejects payloads containing these values even
+  when their signatures are cryptographically valid. Existing finite payload
+  bytes and digests are unchanged; historical non-finite receipts are rejected,
+  never silently rewritten or re-signed. String values such as `"NaN"` remain
+  valid JSON strings.
 - **cosign-compatible:** the PAE is the DSSE-v1 spec encoding — `DSSEv1 SP
   LEN(type) SP type SP LEN(body) SP body` with ASCII decimal lengths over the
   decoded payload bytes — byte-for-byte compatible with `cosign verify-blob`.
