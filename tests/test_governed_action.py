@@ -6,7 +6,10 @@ import base64
 import copy
 import json
 
+import pytest
+
 from szl_receipt import generate_keypair
+from szl_receipt._canonical import canonical_json
 from szl_receipt.governed_action import (
     INCOMPLETE,
     PASS,
@@ -214,3 +217,80 @@ def test_malformed_links_fail_closed_without_raising():
     result = verify_governed_action(envelope, public_key)
     assert result.status == INCOMPLETE
     assert "durable-receipt-links-incomplete" in result.reasons
+
+
+_INVALID_JSON_ENUMS = (
+    (("actor", "type"), "actor-type-invalid"),
+    (("sideEffects", 0, "status"), "side-effect-status-invalid:provider-deployment"),
+)
+_TIMESTAMP_FIELDS = (
+    (("assessedAt",), "assessed-at-invalid"),
+    (("action", "requestedAt"), "action-requested-at-invalid"),
+    (("evidence", "github_source", "observedAt"), "evidence-time-invalid:github_source"),
+)
+
+
+def _replace_at(value, path, replacement):
+    for part in path[:-1]:
+        value = value[part]
+    value[path[-1]] = replacement
+
+
+def _untrusted_payload_with(path, replacement):
+    # Deliberately unsigned: an untrusted sender needs no signing key to reach
+    # semantic validation. Verification must return INCOMPLETE, never raise.
+    envelope = emit_governed_action(**_inputs())
+    statement = json.loads(base64.b64decode(envelope["payload"]))
+    _replace_at(statement["predicate"], path, replacement)
+    envelope["payload"] = base64.b64encode(canonical_json(statement)).decode("ascii")
+    return envelope
+
+
+@pytest.mark.parametrize("path,reason", _INVALID_JSON_ENUMS)
+@pytest.mark.parametrize("value", [[], {}])
+def test_untrusted_enum_containers_are_incomplete(path, reason, value):
+    result = verify_governed_action(_untrusted_payload_with(path, value))
+    assert result.status == INCOMPLETE
+    assert reason in result.reasons
+    assert "dsse-signature-count-not-one" in result.reasons
+
+
+@pytest.mark.parametrize("path,reason", _INVALID_JSON_ENUMS)
+@pytest.mark.parametrize("value", [[], {}])
+def test_emitter_records_invalid_enum_containers(path, reason, value):
+    inputs = _inputs()
+    input_path = ("side_effects", *path[1:]) if path[0] == "sideEffects" else path
+    _replace_at(inputs, input_path, value)
+    envelope, public_key = _signed(inputs)
+    result = verify_governed_action(envelope, public_key)
+    assert result.status == INCOMPLETE
+    assert reason in result.reasons
+    assert "assessment-reasons-mismatch" not in result.reasons
+
+
+@pytest.mark.parametrize("path,reason", _TIMESTAMP_FIELDS)
+@pytest.mark.parametrize("value", [
+    "0001-01-01T00:00:00+01:00",
+    "9999-12-31T23:59:59-01:00",
+])
+def test_untrusted_timestamp_utc_overflow_is_incomplete(path, reason, value):
+    result = verify_governed_action(_untrusted_payload_with(path, value))
+    assert result.status == INCOMPLETE
+    assert reason in result.reasons
+    assert "dsse-signature-count-not-one" in result.reasons
+
+
+@pytest.mark.parametrize("path,reason", _TIMESTAMP_FIELDS)
+@pytest.mark.parametrize("value", [
+    "0001-01-01T00:00:00+01:00",
+    "9999-12-31T23:59:59-01:00",
+])
+def test_emitter_records_timestamp_utc_overflow(path, reason, value):
+    inputs = _inputs()
+    input_path = ("assessed_at",) if path == ("assessedAt",) else path
+    _replace_at(inputs, input_path, value)
+    envelope, public_key = _signed(inputs)
+    result = verify_governed_action(envelope, public_key)
+    assert result.status == INCOMPLETE
+    assert reason in result.reasons
+    assert "assessment-reasons-mismatch" not in result.reasons
