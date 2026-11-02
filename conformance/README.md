@@ -25,6 +25,26 @@ Five implemented gates:
 These gates do not establish signature validity, signer trust, model quality,
 runtime readiness, or release authorization.
 
+## Receipt to lake append/readback vector
+
+V06 is kept under [`interoperability/`](interoperability/) because it tests a
+repository boundary rather than the model release-manifest inputs consumed by
+`run_vectors.py`.  The checker invokes the production keyless receipt emitter,
+then independently recomputes the exact `szl.lake.receipt/v2` complete-body
+SHA3-256 commitment, genesis link, append response, and stable readback
+projection pinned to the merged lake contract:
+
+```sh
+python conformance/lake_append_readback.py \
+  --vector conformance/interoperability/V06-lake-append-readback.json
+```
+
+The negative control reuses one receipt identity with different envelope bytes
+and must resolve to `ReceiptIdentityConflict`.  No ledger or network is used;
+`ingested_at` is excluded because it is generated at append time.  A pass says
+nothing about signer authorization, durable storage, independent checkpoints,
+or a deployed lake.
+
 ### Fixed PAE vectors and regression
 
 [The DSSE protocol](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md)
