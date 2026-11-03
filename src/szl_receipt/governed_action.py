@@ -116,11 +116,13 @@ def _parse_timestamp(value: Any) -> Optional[datetime]:
     candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
         parsed = datetime.fromisoformat(candidate)
-    except ValueError:
+        if parsed.tzinfo is None:
+            return None
+        # An ISO timestamp can be locally representable while its UTC value
+        # overflows datetime's range (year 1/9999 with an offset).
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(timezone.utc)
 
 
 def _valid_digest(value: Any, algorithm: str) -> bool:
@@ -300,7 +302,8 @@ def _core_reasons(statement: Any) -> list[str]:
     actor_id = actor.get("id")
     if not isinstance(actor_id, str) or not actor_id:
         reasons.append("actor-id-invalid")
-    if actor.get("type") not in {"human", "service"}:
+    actor_type = actor.get("type")
+    if not isinstance(actor_type, str) or actor_type not in {"human", "service"}:
         reasons.append("actor-type-invalid")
     if actor.get("authenticated") is not True:
         reasons.append("actor-not-authenticated")
@@ -402,7 +405,7 @@ def _core_reasons(statement: Any) -> list[str]:
             status = effect.get("status")
             if not isinstance(required, bool):
                 reasons.append(f"side-effect-required-invalid:{effect_id or index}")
-            if status not in {"COMPLETED", "NOT_PERFORMED"}:
+            if not isinstance(status, str) or status not in {"COMPLETED", "NOT_PERFORMED"}:
                 reasons.append(f"side-effect-status-invalid:{effect_id or index}")
             if required is True and status != "COMPLETED":
                 reasons.append(f"side-effect-required-incomplete:{effect_id or index}")
