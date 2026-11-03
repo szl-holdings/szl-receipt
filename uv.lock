@@ -881,7 +881,7 @@ requires-dist = [
     { name = "in-toto-attestation", specifier = ">=0.9.3,<1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15,<0.16" },
-    { name = "twine", marker = "extra == 'release'", specifier = ">=6.1,<7" },
+    { name = "twine", marker = "extra == 'release'", specifier = ">=6.1,<8" },
 ]
 provides-extras = ["dev", "release"]
 
