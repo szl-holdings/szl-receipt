@@ -57,11 +57,20 @@ lengths over the **decoded** payload bytes), byte-for-byte compatible with
 pip install szl-receipt-dsse
 ```
 
-Or from source:
+For a reproducible source checkout, use the committed cross-platform lock:
 
 ```bash
-pip install -e ".[dev]"
+uv lock --check
+uv sync --frozen --extra dev
 ```
+
+The published library keeps compatible runtime dependency ranges so it can
+coexist with other packages.  [`uv.lock`](uv.lock) separately pins the exact
+repository development and release graph, including transitive artifact
+hashes. The PEP 517 backend is exact even inside `python -m build`'s isolated
+environment; CI refuses a stale lock before running any receipt or release
+gate. This fixes dependency and toolchain selection. It does not claim that two
+builds produce byte-identical archives.
 
 ## Quick start
 
@@ -293,7 +302,8 @@ with the SZL receipt profile and separate artifact/source/signer fixture policy.
 It retains source hashes and verdicts; private fixture keys remain in memory.
 
 ```bash
-python conformance/benchmark_verifiers.py --require-openssl --output verifier-benchmark.json
+uv run --frozen --extra dev python conformance/benchmark_verifiers.py \
+  --require-openssl --output verifier-benchmark.json
 ```
 
 Run after installing the development dependencies below. Missing required
@@ -301,9 +311,27 @@ OpenSSL comparison is UNAVAILABLE and nonzero. Local fixture admission does
 not establish external signer trust or production authorization.
 
 ```bash
-pip install -e ".[dev]"
-pytest -q
+uv lock --check
+uv sync --frozen --extra dev
+uv run --frozen --extra dev pytest -q
 ```
+
+### Receipt to lake boundary
+
+The frozen [V06 interoperability vector](conformance/interoperability/V06-lake-append-readback.json)
+binds a production keyless-honest receipt envelope to the exact `szl-lake` v2
+append acknowledgement and stable readback fields.  It independently
+recomputes the lake's SHA3-256 complete-body commitment and genesis chain head,
+then proves that the same identity with different receipt bytes is a conflict:
+
+```bash
+uv run --frozen --extra dev python conformance/lake_append_readback.py \
+  --vector conformance/interoperability/V06-lake-append-readback.json
+```
+
+This is deterministic source interoperability evidence.  It does not write a
+lake, establish signer trust, prove filesystem durability, or authorize a
+deployed service.
 
 ## SPDX
 

@@ -1,5 +1,8 @@
 [build-system]
-requires = ["hatchling"]
+# Keep the PEP 517 backend exact because `python -m build` creates an isolated
+# environment. Hatchling 1.32 emits Core Metadata 2.5, so the release
+# checker must be Twine 7 or newer; both are recorded in the frozen graph.
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -28,7 +31,27 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
+    "pytest>=8,<10",
+    "ruff>=0.15,<0.18",
+]
+release = [
+    "build>=1.2,<2",
+    "hatchling==1.32.4",
+    "twine>=7,<8",
+]
+
+[tool.uv]
+# Preserve the library's compatibility ranges while resolving the reproducible
+# development/release environment to the exact versions used for DSSE and
+# in-toto conformance.  uv.lock carries the transitive wheels and hashes.
+constraint-dependencies = [
+    "cryptography==50.0.1",
+    "in-toto-attestation==0.9.3",
+]
+# Constrain isolated builds resolved by uv to the same backend recorded in the
+# release graph. The exact PEP 517 requirement above also binds `python -m build`.
+build-constraint-dependencies = [
+    "hatchling==1.32.4",
 ]
 
 [project.urls]

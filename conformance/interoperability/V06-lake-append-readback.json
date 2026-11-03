@@ -1,0 +1,128 @@
+{
+  "append_request": {
+    "envelope": {
+      "algo": "UNSIGNED",
+      "digest": "9680d76adc92a00a57a1e1fa55beaf76e89020effeb96b6f16c3e745b805389e",
+      "keyid": "",
+      "note": "UNSIGNED-honest: no cosign key present",
+      "organ": "audit",
+      "payload": "eyJhY3Rpb24iOiJhbGxvdyIsImtpbmQiOiJwb2xpY3ktZGVjaXNpb24iLCJwb2xpY3kiOiJ2MyIsInNjb3JlIjowLjg3NX0=",
+      "payloadType": "application/vnd.szl.receipt+json",
+      "signature": "",
+      "signed": false
+    },
+    "id": "szl-receipt:9680d76adc92a00a57a1e1fa55beaf76e89020effeb96b6f16c3e745b805389e",
+    "organ": "audit",
+    "ts": "2026-11-02T00:00:00Z"
+  },
+  "conflict_producer": {
+    "body": {
+      "action": "deny",
+      "kind": "policy-decision",
+      "policy": "v3",
+      "score": 0.875
+    },
+    "keyid": "",
+    "kind": "policy-decision",
+    "organ": "audit"
+  },
+  "conflict_request": {
+    "envelope": {
+      "algo": "UNSIGNED",
+      "digest": "d59d5d6e9b2d218e143aeb1fadeab1f816ae3c454f5f00bed0fba3f9ec18e2bb",
+      "keyid": "",
+      "note": "UNSIGNED-honest: no cosign key present",
+      "organ": "audit",
+      "payload": "eyJhY3Rpb24iOiJkZW55Iiwia2luZCI6InBvbGljeS1kZWNpc2lvbiIsInBvbGljeSI6InYzIiwic2NvcmUiOjAuODc1fQ==",
+      "payloadType": "application/vnd.szl.receipt+json",
+      "signature": "",
+      "signed": false
+    },
+    "id": "szl-receipt:9680d76adc92a00a57a1e1fa55beaf76e89020effeb96b6f16c3e745b805389e",
+    "organ": "audit",
+    "ts": "2026-11-02T00:00:00Z"
+  },
+  "description": "Keyless-honest szl-receipt envelope wrapped for a genesis szl-lake v2 append, exact acknowledgement/readback projection, and same-identity/different-body refusal.",
+  "expected": {
+    "append_response": {
+      "accepted": true,
+      "chain_head": "6290da36439cb549a3fef9964a44b8d3f6fdee2b41d0340c420f0d9dab2d54fd",
+      "chain_index": 1,
+      "duplicate": false,
+      "ledger_offset": 1,
+      "organ": "audit",
+      "receipt_body_hash": "8f20a96b7aad3b3c2a6295684acbc359fab4c0b33dcda398f3f623ecb28102a6",
+      "receipt_id": "szl-receipt:9680d76adc92a00a57a1e1fa55beaf76e89020effeb96b6f16c3e745b805389e"
+    },
+    "readback_projection": {
+      "chain_alg": "sha3_256",
+      "chain_hash": "6290da36439cb549a3fef9964a44b8d3f6fdee2b41d0340c420f0d9dab2d54fd",
+      "chain_index": 1,
+      "energy": {
+        "label": "UNAVAILABLE"
+      },
+      "organ": "audit",
+      "prev_hash": null,
+      "receipt": {
+        "envelope": {
+          "algo": "UNSIGNED",
+          "digest": "9680d76adc92a00a57a1e1fa55beaf76e89020effeb96b6f16c3e745b805389e",
+          "keyid": "",
+          "note": "UNSIGNED-honest: no cosign key present",
+          "organ": "audit",
+          "payload": "eyJhY3Rpb24iOiJhbGxvdyIsImtpbmQiOiJwb2xpY3ktZGVjaXNpb24iLCJwb2xpY3kiOiJ2MyIsInNjb3JlIjowLjg3NX0=",
+          "payloadType": "application/vnd.szl.receipt+json",
+          "signature": "",
+          "signed": false
+        },
+        "id": "szl-receipt:9680d76adc92a00a57a1e1fa55beaf76e89020effeb96b6f16c3e745b805389e",
+        "organ": "audit",
+        "ts": "2026-11-02T00:00:00Z"
+      },
+      "receipt_body_hash": "8f20a96b7aad3b3c2a6295684acbc359fab4c0b33dcda398f3f623ecb28102a6",
+      "receipt_id": "szl-receipt:9680d76adc92a00a57a1e1fa55beaf76e89020effeb96b6f16c3e745b805389e",
+      "schema": "szl.lake.receipt/v2",
+      "ts": "2026-11-02T00:00:00Z"
+    },
+    "same_identity_different_body": {
+      "exception": "ReceiptIdentityConflict",
+      "expected_hash": "8f20a96b7aad3b3c2a6295684acbc359fab4c0b33dcda398f3f623ecb28102a6",
+      "receipt_id": "szl-receipt:9680d76adc92a00a57a1e1fa55beaf76e89020effeb96b6f16c3e745b805389e",
+      "received_hash": "62fd0987233dd70ca54576cc8a95a2ae1689d38dc7a05c4d97f54e0315ed0d8b"
+    }
+  },
+  "lake_contract": {
+    "chain_alg": "sha3_256",
+    "merge_revision": "98b0e5d51ac29f97d778a51ed94de6b08c9798d9",
+    "repository": "szl-holdings/szl-lake",
+    "schema": "szl.lake.receipt/v2",
+    "source_revision": "badba6f415ea98d2702ffc1602c2f3f455f2a544"
+  },
+  "producer": {
+    "body": {
+      "action": "allow",
+      "kind": "policy-decision",
+      "policy": "v3",
+      "score": 0.875
+    },
+    "keyid": "",
+    "kind": "policy-decision",
+    "organ": "audit"
+  },
+  "receipt_contract": {
+    "package": "szl-receipt-dsse",
+    "payload_type": "application/vnd.szl.receipt+json",
+    "repository": "szl-holdings/szl-receipt",
+    "version": "0.3.4"
+  },
+  "schema": "szl.receipt-lake.golden/v1",
+  "scope": {
+    "measured": "deterministic byte and digest interoperability",
+    "not_established": [
+      "signature authenticity or signer authorization",
+      "filesystem durability or independent checkpointing",
+      "a deployed lake service or production admission"
+    ]
+  },
+  "timestamp": "2026-11-02T00:00:00Z"
+}
