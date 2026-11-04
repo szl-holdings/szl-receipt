@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+title: "szl-receipt"
+message: "If you use this software, please cite this repository."
+type: software
+authors:
+  - name: "SZL Holdings"
+repository-code: "https://github.com/szl-holdings/szl-receipt"
+license: Apache-2.0
