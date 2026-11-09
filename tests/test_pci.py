@@ -143,6 +143,22 @@ def test_signed_roundtrip_advisory_pass():
     assert res.signed is True
 
 
+@pytest.mark.parametrize("junk", ["!", " ", "\n", "\x00", "-_", "#@%&"])
+def test_pci_rejects_malformed_signature_transport(junk):
+    private_key, public_key = generate_keypair()
+    receipt = emit_pci_receipt(
+        model_id="m", input_digest="i", output_digest="o", policy_id="p",
+        lambda_verdict=_good_verdict(), private_key_pem=private_key,
+    )
+    assert verify_pci_receipt(receipt, public_key_pem=public_key).ok is True
+    encoded = receipt["envelope"]["signature"]
+    receipt["envelope"]["signature"] = encoded[:8] + junk + encoded[8:]
+
+    result = verify_pci_receipt(receipt, public_key_pem=public_key)
+    assert result.ok is False
+    assert result.reason.startswith("invalid key or encoding:")
+
+
 def test_advisory_fail_is_still_a_valid_receipt():
     priv, pub = generate_keypair()
     weak = lg.evaluate({"safety": 0.2, "provenance": 0.9}, {"safety": 0.5, "provenance": 0.5}, theta=0.8)
