@@ -116,6 +116,19 @@ def test_signed_receipt_verifies_end_to_end():
     assert ok2 is True
 
 
+@pytest.mark.parametrize("junk", ["!", " ", "\n", "\x00", "-_", "#@%&"])
+def test_sdk_rejects_malformed_signature_transport(junk):
+    private_key, public_key = generate_keypair()
+    receipt = _emit(priv=private_key)
+    assert verify_emitted_receipt(receipt, public_key_pem=public_key) == (True, "ok")
+    encoded = receipt["envelope"]["signature"]
+    receipt["envelope"]["signature"] = encoded[:8] + junk + encoded[8:]
+
+    ok, reason = verify_emitted_receipt(receipt, public_key_pem=public_key)
+    assert ok is False
+    assert reason.startswith("invalid key or encoding:")
+
+
 def test_envelope_is_drop_in_for_core_verifier():
     # The emitted envelope reuses the EXISTING shape: the core verify_receipt
     # (envelope-level) verifies it with no changes.

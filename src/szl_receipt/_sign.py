@@ -131,7 +131,8 @@ def verify_dsse(
     Args:
         body_dict: The decoded receipt body (must reproduce the same
             canonical_json bytes that were signed).
-        signature_b64: Base64-encoded DER signature.
+        signature_b64: Standard base64-encoded DER signature. Non-alphabet
+            characters (including whitespace) are rejected, not discarded.
         public_key_pem: PEM-encoded ECDSA-P256 public key.
 
     Returns:
@@ -142,7 +143,7 @@ def verify_dsse(
     try:
         public_key = _load_public_key(public_key_pem)
         _, signing = _signing_bytes(body_dict)
-        der_sig = base64.b64decode(signature_b64)
+        der_sig = base64.b64decode(signature_b64, validate=True)
         public_key.verify(der_sig, signing, ec.ECDSA(hashes.SHA256()))
         return True, "ok"
     except InvalidSignature:
