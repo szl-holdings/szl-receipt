@@ -1,0 +1,394 @@
+{
+ "schema": "szl.canonicalization.vectors/v1",
+ "generated_by": "szl_evidence_core.canonical.canonical_bytes, RFC 8785 rows cross-checked against the rfc8785 PyPI package",
+ "input_encoding": "objects of the form {\"$float\": <repr>} decode to Python floats; everything else is plain JSON",
+ "profiles": [
+  "szl.canon/v1",
+  "szl.lambda/v1",
+  "rfc8785"
+ ],
+ "cases": [
+  {
+   "id": "ascii_sorted",
+   "input": {
+    "b": 1,
+    "a": [
+     1,
+     2,
+     {
+      "d": null,
+      "c": true
+     }
+    ]
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"a\":[1,2,{\"c\":true,\"d\":null}],\"b\":1}",
+     "sha256": "a06efa1296746038e65b4c06eddffdeff5009838cc5bb977fac2695f82fd1ebe"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"a\":[1,2,{\"c\":true,\"d\":null}],\"b\":1}",
+     "sha256": "a06efa1296746038e65b4c06eddffdeff5009838cc5bb977fac2695f82fd1ebe"
+    },
+    "rfc8785": {
+     "utf8": "{\"a\":[1,2,{\"c\":true,\"d\":null}],\"b\":1}",
+     "sha256": "a06efa1296746038e65b4c06eddffdeff5009838cc5bb977fac2695f82fd1ebe"
+    }
+   }
+  },
+  {
+   "id": "non_ascii_lambda",
+   "input": {
+    "k": "Λ = Conjecture 1"
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"k\":\"\\u039b = Conjecture 1\"}",
+     "sha256": "673863ea3b1671d695df122368fc1c57b76daaab0e59d445952c0f30a5ad9664"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"k\":\"Λ = Conjecture 1\"}",
+     "sha256": "349c92c59d6d963fe8716dd44414af6374f6a024550da9f676b4ebe42ad74dd2"
+    },
+    "rfc8785": {
+     "utf8": "{\"k\":\"Λ = Conjecture 1\"}",
+     "sha256": "349c92c59d6d963fe8716dd44414af6374f6a024550da9f676b4ebe42ad74dd2"
+    }
+   }
+  },
+  {
+   "id": "nfc_e_acute",
+   "input": {
+    "k": "café"
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"k\":\"caf\\u00e9\"}",
+     "sha256": "a794bc86cd7337aa5f2bd0076af35143941b5ddf9b9e977acfa2c1d370a65c74"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"k\":\"café\"}",
+     "sha256": "2303df0176226e83b89fa2a9311d76a8a4c29b0e8ae83ffaa0e431fa4f8b5359"
+    },
+    "rfc8785": {
+     "utf8": "{\"k\":\"café\"}",
+     "sha256": "2303df0176226e83b89fa2a9311d76a8a4c29b0e8ae83ffaa0e431fa4f8b5359"
+    }
+   }
+  },
+  {
+   "id": "nfd_e_acute",
+   "input": {
+    "k": "café"
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"k\":\"cafe\\u0301\"}",
+     "sha256": "9a95b0c0b9503f25c3027e8851a400b1927e0969e0747420d995f9dfd838f392"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"k\":\"café\"}",
+     "sha256": "b458c3fea0365168e9409fb9b1b2af1ef5c785000f81905f83c5ca6c224eebad"
+    },
+    "rfc8785": {
+     "utf8": "{\"k\":\"café\"}",
+     "sha256": "b458c3fea0365168e9409fb9b1b2af1ef5c785000f81905f83c5ca6c224eebad"
+    }
+   }
+  },
+  {
+   "id": "float_integral_1.0",
+   "input": {
+    "x": {
+     "$float": "1.0"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"x\":1.0}",
+     "sha256": "bf32f56236899e13ef54db875d136c6cbcc65244464829c54911aa9069b0ae25"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"x\":1.0}",
+     "sha256": "bf32f56236899e13ef54db875d136c6cbcc65244464829c54911aa9069b0ae25"
+    },
+    "rfc8785": {
+     "utf8": "{\"x\":1}",
+     "sha256": "5041bf1f713df204784353e82f6a4a535931cb64f1f4b4a5aeaffcb720918b22"
+    }
+   }
+  },
+  {
+   "id": "float_0.1",
+   "input": {
+    "x": {
+     "$float": "0.1"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"x\":0.1}",
+     "sha256": "2b018c1708c1cc2f4a8ed7f085c2cc748153117b173f7c076f7d5813bbb50f21"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"x\":0.1}",
+     "sha256": "2b018c1708c1cc2f4a8ed7f085c2cc748153117b173f7c076f7d5813bbb50f21"
+    },
+    "rfc8785": {
+     "utf8": "{\"x\":0.1}",
+     "sha256": "2b018c1708c1cc2f4a8ed7f085c2cc748153117b173f7c076f7d5813bbb50f21"
+    }
+   }
+  },
+  {
+   "id": "float_1e21",
+   "input": {
+    "x": {
+     "$float": "1e+21"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"x\":1e+21}",
+     "sha256": "f4bcbb57bdf54b5b595d88096406c936d86bf0b6dd316d0ad2b4d2504c610403"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"x\":1e+21}",
+     "sha256": "f4bcbb57bdf54b5b595d88096406c936d86bf0b6dd316d0ad2b4d2504c610403"
+    },
+    "rfc8785": {
+     "utf8": "{\"x\":1e+21}",
+     "sha256": "f4bcbb57bdf54b5b595d88096406c936d86bf0b6dd316d0ad2b4d2504c610403"
+    }
+   }
+  },
+  {
+   "id": "float_1e-7",
+   "input": {
+    "x": {
+     "$float": "1e-07"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"x\":1e-07}",
+     "sha256": "c8b4301d31692cc55fc58ee2d4368e95e4971ac5d25036abceb45c33a05b0fcb"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"x\":1e-07}",
+     "sha256": "c8b4301d31692cc55fc58ee2d4368e95e4971ac5d25036abceb45c33a05b0fcb"
+    },
+    "rfc8785": {
+     "utf8": "{\"x\":1e-7}",
+     "sha256": "43c8e92bd5552bd45030718eb9366d6d6500623793c248666d77dca01ba337c0"
+    }
+   }
+  },
+  {
+   "id": "float_1e16",
+   "input": {
+    "x": {
+     "$float": "1e+16"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"x\":1e+16}",
+     "sha256": "21d6bea42b17fd31195fc9fc560ab7d0494ba833cdd094be2836c21506e84464"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"x\":1e+16}",
+     "sha256": "21d6bea42b17fd31195fc9fc560ab7d0494ba833cdd094be2836c21506e84464"
+    },
+    "rfc8785": {
+     "utf8": "{\"x\":10000000000000000}",
+     "sha256": "d9ea702067d662ee3f58b5c6d52a45908d3759be54b49ff5689eabdae1b0a9d8"
+    }
+   }
+  },
+  {
+   "id": "neg_zero",
+   "input": {
+    "x": {
+     "$float": "-0.0"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"x\":-0.0}",
+     "sha256": "529436936b90ebdff10ece80ead76834aeae76aa1e44d6c334ac3ca3832a8fba"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"x\":-0.0}",
+     "sha256": "529436936b90ebdff10ece80ead76834aeae76aa1e44d6c334ac3ca3832a8fba"
+    },
+    "rfc8785": {
+     "utf8": "{\"x\":0}",
+     "sha256": "5bff452c5ed93f2e87a23984db5a15050c6477335fdec955b70063bb2d692bf1"
+    }
+   }
+  },
+  {
+   "id": "int_2^53",
+   "input": {
+    "x": 9007199254740992
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"x\":9007199254740992}",
+     "sha256": "9799d751f6b78d19d7d2dfe1b3889007eb2de56c34a92e998389795b26cb14d3"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"x\":9007199254740992}",
+     "sha256": "9799d751f6b78d19d7d2dfe1b3889007eb2de56c34a92e998389795b26cb14d3"
+    },
+    "rfc8785": {
+     "utf8": "{\"x\":9007199254740992}",
+     "sha256": "9799d751f6b78d19d7d2dfe1b3889007eb2de56c34a92e998389795b26cb14d3"
+    }
+   },
+   "note": "rfc8785 PyPI package refuses (|int| > 2**53-1, JS safe-integer range); szl profile accepts because 2**53 is an exact IEEE double. Implementations MAY refuse.",
+   "implementations_may_reject": [
+    "rfc8785"
+   ]
+  },
+  {
+   "id": "int_2^53+1",
+   "input": {
+    "x": 9007199254740993
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"x\":9007199254740993}",
+     "sha256": "880e06ad9369e8753dceaecd582caad85e45a16007844f958ad5818b7c14e44a"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"x\":9007199254740993}",
+     "sha256": "880e06ad9369e8753dceaecd582caad85e45a16007844f958ad5818b7c14e44a"
+    },
+    "rfc8785": {
+     "reject": true
+    }
+   }
+  },
+  {
+   "id": "u2028",
+   "input": {
+    "k": "a b"
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"k\":\"a\\u2028b\"}",
+     "sha256": "fa061267670bd2741748dcdbe1f1d8d58974ed0379293e732301c1220cf46d2f"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"k\":\"a b\"}",
+     "sha256": "e229a9cab5c0ee83831947bc9f63e913a1d2fa04b83832821dedb2f283cb6159"
+    },
+    "rfc8785": {
+     "utf8": "{\"k\":\"a b\"}",
+     "sha256": "e229a9cab5c0ee83831947bc9f63e913a1d2fa04b83832821dedb2f283cb6159"
+    }
+   }
+  },
+  {
+   "id": "c0_control",
+   "input": {
+    "k": "a\u0001b\tc"
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"k\":\"a\\u0001b\\tc\"}",
+     "sha256": "44606a5071ed1708d2bdeb568aedd12dce6be3e8dbcc5d802dcfefb260b3a8ef"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"k\":\"a\\u0001b\\tc\"}",
+     "sha256": "44606a5071ed1708d2bdeb568aedd12dce6be3e8dbcc5d802dcfefb260b3a8ef"
+    },
+    "rfc8785": {
+     "utf8": "{\"k\":\"a\\u0001b\\tc\"}",
+     "sha256": "44606a5071ed1708d2bdeb568aedd12dce6be3e8dbcc5d802dcfefb260b3a8ef"
+    }
+   }
+  },
+  {
+   "id": "astral_key_sort",
+   "input": {
+    "😀": 1,
+    "ﬁ": 2,
+    "z": 3
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "utf8": "{\"z\":3,\"\\ufb01\":2,\"\\ud83d\\ude00\":1}",
+     "sha256": "ab99a186106f0e87e9944fd37aaf2c7cd4d7361e3ad20a84766786f41a8ebd6c"
+    },
+    "szl.lambda/v1": {
+     "utf8": "{\"z\":3,\"ﬁ\":2,\"😀\":1}",
+     "sha256": "39b08110abe8023e6c120aa8a43c77116f406f1c2d79c81cdece3620a80e63f8"
+    },
+    "rfc8785": {
+     "utf8": "{\"z\":3,\"😀\":1,\"ﬁ\":2}",
+     "sha256": "4b6d2968110f019ab5911bfaad09b68adcd903707333e9ac8d352a24c5a08a5c"
+    }
+   }
+  },
+  {
+   "id": "nan",
+   "input": {
+    "x": {
+     "$float": "NaN"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "reject": true
+    },
+    "szl.lambda/v1": {
+     "reject": true
+    },
+    "rfc8785": {
+     "reject": true
+    }
+   }
+  },
+  {
+   "id": "inf",
+   "input": {
+    "x": {
+     "$float": "Infinity"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "reject": true
+    },
+    "szl.lambda/v1": {
+     "reject": true
+    },
+    "rfc8785": {
+     "reject": true
+    }
+   }
+  },
+  {
+   "id": "neg_inf",
+   "input": {
+    "x": {
+     "$float": "-Infinity"
+    }
+   },
+   "expected": {
+    "szl.canon/v1": {
+     "reject": true
+    },
+    "szl.lambda/v1": {
+     "reject": true
+    },
+    "rfc8785": {
+     "reject": true
+    }
+   }
+  }
+ ]
+}
