@@ -44,6 +44,21 @@ def _case(bundle, name):
     return next(case for case in bundle.cases if case.name == name)
 
 
+@pytest.mark.parametrize("junk", ["!", " ", "\n", "\x00", "-_", "#@%&"])
+def test_malformed_signature_transport_is_rejected_consistently(bundle, openssl, junk):
+    case = _case(bundle, "valid")
+    envelope = copy.deepcopy(case.envelope)
+    encoded = envelope["signature"]
+    envelope["signature"] = encoded[:8] + junk + encoded[8:]
+    assert benchmark.verify_profile(envelope, case.verification_key_pem)["accepted"] is False
+    assert benchmark.verify_raw_signature(envelope, case.verification_key_pem)["accepted"] is False
+    if openssl.available:
+        result = openssl.verify(envelope, case.verification_key_pem)
+        assert result["accepted"] is False
+        # The adapter rejects invalid transport before executing OpenSSL.
+        assert "command" not in result
+
+
 @pytest.mark.parametrize("name", [
     "valid", "payload_tamper", "payload_type_tamper", "signature_tamper",
     "wrong_verification_key", "pretty_json_unchanged_signature", "pretty_json_resigned",

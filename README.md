@@ -127,6 +127,11 @@ existing false defaults.
 | `algo` | str | `"ECDSA-P256-SHA256"` or `"UNSIGNED"` |
 | `note` | str | Present only when unsigned; value: `"UNSIGNED-honest: no cosign key present"` |
 
+Signature strings use standard base64. Verification rejects non-alphabet
+characters, including whitespace, instead of silently discarding them. This
+also applies through the SDK and PCI verifiers. Previously tolerated malformed
+signature strings are rejected; signatures emitted by this library are unchanged.
+
 ## cosign verification
 
 Save the public key as `organ.pub`, then:

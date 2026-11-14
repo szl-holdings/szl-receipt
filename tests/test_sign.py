@@ -8,6 +8,7 @@ import json
 import pytest
 
 from szl_receipt import Receipt, generate_keypair, sign_receipt, verify_receipt
+from szl_receipt._sign import verify_dsse
 
 
 @pytest.fixture()
@@ -32,6 +33,30 @@ def test_sign_verify_roundtrip(keypair, receipt):
     ok, detail = verify_receipt(env, public_key_pem=pub_pem)
     assert ok is True, f"verify failed: {detail}"
     assert detail == "ok"
+
+
+@pytest.mark.parametrize("junk", ["!", " ", "\n", "\x00", "-_", "#@%&"])
+def test_signature_encoding_rejects_discarded_characters(keypair, receipt, junk):
+    private_key, public_key = keypair
+    envelope = sign_receipt(receipt, private_key_pem=private_key)
+    encoded = envelope["signature"]
+    malformed = encoded[:8] + junk + encoded[8:]
+
+    # The DER signature itself is unchanged by permissive decoding. This is
+    # malformed transport, not a signature forgery or a payload alteration.
+    assert base64.b64decode(malformed) == base64.b64decode(encoded)
+    with pytest.raises(ValueError):
+        base64.b64decode(malformed, validate=True)
+    assert verify_dsse(receipt.body, encoded, public_key) == (True, "ok")
+    assert verify_receipt(envelope, public_key) == (True, "ok")
+
+    envelope["signature"] = malformed
+    for ok, reason in (
+        verify_dsse(receipt.body, malformed, public_key),
+        verify_receipt(envelope, public_key),
+    ):
+        assert ok is False
+        assert reason.startswith("invalid key or encoding:")
 
 
 # Test 2 — tamper detection: flip one character in the payload b64
