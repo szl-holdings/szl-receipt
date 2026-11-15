@@ -31,7 +31,7 @@ Anchoring prior art (cited, not claimed as ours):
   * Kol, Ben-Shahar, Sulimany, Englund, "A machine-verified proof of a
     quantum-optimization conjecture", arXiv:2606.29687 (2026) — LLM proposes /
     Lean 4 certifies, the same loop SZL points at governance.
-SZL corpus concept DOI: 10.5281/zenodo.19944926.
+SZL corpus concept DOI: 10.5281/zenodo.24239896.
 """
 from __future__ import annotations
 
