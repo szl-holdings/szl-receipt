@@ -294,7 +294,7 @@ Runnable end-to-end demo: [`examples/proof_carrying_inference.py`](examples/proo
   quantum-optimization conjecture*, [arXiv:2606.29687](https://arxiv.org/abs/2606.29687) (2026) —
   LLM proposes / Lean 4 certifies, the loop SZL points at governance rather than
   pure mathematics.
-- SZL corpus concept DOI: [10.5281/zenodo.19944926](https://doi.org/10.5281/zenodo.19944926).
+- SZL corpus concept DOI: [10.5281/zenodo.24239896](https://doi.org/10.5281/zenodo.24239896).
 
 ## Development
 
