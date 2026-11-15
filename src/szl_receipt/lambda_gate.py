@@ -21,7 +21,7 @@ Honesty doctrine (never weakened):
     **false as stated** (Conjecture 1) — this module never asserts otherwise.
 
 Companion kernel: github.com/szl-holdings/szl-lambda-gate
-Concept DOI: 10.5281/zenodo.19944926
+Concept DOI: 10.5281/zenodo.24239896
 """
 from __future__ import annotations
 
