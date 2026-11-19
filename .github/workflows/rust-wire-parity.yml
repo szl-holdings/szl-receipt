@@ -29,6 +29,7 @@ jobs:
         run: |
           rustup toolchain install 1.91.1 --profile minimal --component rustfmt,clippy
           rustup default 1.91.1
+          rustup target add wasm32-unknown-unknown --toolchain 1.91.1
       - name: Format and lint
         shell: bash
         run: |
@@ -40,6 +41,9 @@ jobs:
           cargo test --locked --manifest-path rust/szl-receipt-wire/Cargo.toml
           cargo build --locked --manifest-path rust/szl-receipt-wire/Cargo.toml --bin szl-receipt-wire-cli
           python3 conformance/rust_wire_conformance.py --binary rust/szl-receipt-wire/target/debug/szl-receipt-wire-cli
+      - name: Check portable Rust core on Wasm target (not a Worker deployment)
+        shell: bash
+        run: cargo check --locked --no-default-features --target wasm32-unknown-unknown --manifest-path rust/szl-receipt-wire/Cargo.toml
       - name: Build unpublished Python wheel (PyO3/Maturin)
         shell: bash
         run: |
