@@ -4,3 +4,6 @@ __pycache__/
 
 # Explicit local cross-verifier output is evidence, not source or a release.
 verifier-benchmark.json
+
+# Rust proving-ground outputs are built only from reviewed source.
+rust/szl-receipt-wire/target/

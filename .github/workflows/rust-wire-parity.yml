@@ -1,0 +1,50 @@
+name: Rust wire parity (source-only)
+
+on:
+  pull_request:
+    paths:
+      - "rust/szl-receipt-wire/**"
+      - "conformance/rust_wire_conformance.py"
+      - ".github/workflows/rust-wire-parity.yml"
+  push:
+    branches: [main]
+    paths:
+      - "rust/szl-receipt-wire/**"
+      - "conformance/rust_wire_conformance.py"
+      - ".github/workflows/rust-wire-parity.yml"
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+
+jobs:
+  rust-wire:
+    name: Rust byte parity (not a release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.91.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.91.1
+      - name: Format and lint
+        shell: bash
+        run: |
+          cargo fmt --manifest-path rust/szl-receipt-wire/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path rust/szl-receipt-wire/Cargo.toml --all-targets -- -D warnings
+      - name: Unit tests and source-only CLI
+        shell: bash
+        run: |
+          cargo test --locked --manifest-path rust/szl-receipt-wire/Cargo.toml
+          cargo build --locked --manifest-path rust/szl-receipt-wire/Cargo.toml --bin szl-receipt-wire-cli
+          python3 conformance/rust_wire_conformance.py --binary rust/szl-receipt-wire/target/debug/szl-receipt-wire-cli
+      - name: Build unpublished Python wheel (PyO3/Maturin)
+        shell: bash
+        run: |
+          python3 -m venv /tmp/szl-wire-venv
+          /tmp/szl-wire-venv/bin/pip install 'maturin==1.16.0'
+          /tmp/szl-wire-venv/bin/maturin build --locked --manifest-path rust/szl-receipt-wire/Cargo.toml --interpreter /tmp/szl-wire-venv/bin/python --out /tmp/szl-wire-wheels
+          /tmp/szl-wire-venv/bin/pip install /tmp/szl-wire-wheels/*.whl
+          /tmp/szl-wire-venv/bin/python -c 'import szl_receipt_wire; assert szl_receipt_wire.pae("text/é", bytes.fromhex("cf80")) == bytes.fromhex("445353457631203720746578742fc3a9203220cf80")'
