@@ -26,6 +26,8 @@ The differential runner checks all four committed original Python DSSE PAE byte 
 
 The resulting separate experimental szl-receipt-wire distribution exposes the Python module szl_receipt_wire, with the byte-only pae(payload_type, bytes_payload) entrypoint. No auto-import or silent Rust fallback is added to existing Python package consumers. A wheel build does not authorize PyPI publication or runtime use.
 
+Security gate: the optional PyO3 binding is pinned by Cargo.lock to PyO3 0.30.1. This version is outside the affected ranges of RUSTSEC-2026-0176 and RUSTSEC-2026-0177 (patched in 0.29.0). Trivy's HIGH/CRITICAL gate is not suppressed. No cryptographic verification is claimed.
+
 The Rust implementation imposes **local** 16 MiB payload and 4096-byte type caps; these are not restrictions in the DSSE specification, and the Python canonical implementation accepts larger inputs. The CLI exposes arguments to the process list: use only the supplied public SAMPLE fixtures, never credentials or private receipts.
 
 ## Explicit non-claims
