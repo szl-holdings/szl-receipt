@@ -17,7 +17,7 @@ Verified Rust compiler selection: rust-toolchain.toml (1.91.1).
     cargo build --locked --manifest-path rust/szl-receipt-wire/Cargo.toml --bin szl-receipt-wire-cli
     python3 conformance/rust_wire_conformance.py --binary rust/szl-receipt-wire/target/debug/szl-receipt-wire-cli
 
-The differential runner checks all four committed original Python DSSE PAE byte vectors (official, empty, Unicode and binary), plus three malformed-input refusals. It records both source hashes, not an approval or a cryptographic signature.
+The differential runner checks all four committed original Python DSSE PAE byte vectors (official, empty, Unicode and binary), plus 64 fixed-seed synthetic Python/Rust metamorphic cases over Unicode types and binary payload lengths up to 8,191 bytes, plus three malformed-input refusals. The synthetic cases are not independent protocol reference vectors. The runner records both source hashes, not an approval or a cryptographic signature.
 
 Wasm portability (not a Cloudflare Worker): add the wasm32-unknown-unknown target to the isolated Rust toolchain and run cargo check --locked --no-default-features --target wasm32-unknown-unknown --manifest-path rust/szl-receipt-wire/Cargo.toml. This checks only compilation and does not supply Worker request handlers, Wasm bindings, authorization, or deployment.
 

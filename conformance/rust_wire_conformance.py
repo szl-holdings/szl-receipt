@@ -67,6 +67,34 @@ def main() -> int:
         assert actual.returncode == 0, (row["id"], actual.returncode)
         assert actual.stdout.strip() == expected.hex(), row["id"]
         matched += 1
+    metamorphic_cases = 0
+    metamorphic_payload_types = (
+        "application/vnd.in-toto+json",
+        "application/x-unicode-π-🦀",
+        "text/plain; charset=utf-8; label=δοκιμή",
+        "application/x-測試-🧪",
+    )
+    metamorphic_lengths = (0, 1, 2, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 6143, 8191)
+    for type_index, payload_type in enumerate(metamorphic_payload_types):
+        for length_index, payload_length in enumerate(metamorphic_lengths):
+            seed = f"szl-pae-metamorphic-v1:{type_index}:{length_index}".encode("ascii")
+            payload = bytearray()
+            block_index = 0
+            while len(payload) < payload_length:
+                payload.extend(hashlib.sha256(
+                    seed + b":" + str(block_index).encode("ascii")
+                ).digest())
+                block_index += 1
+            payload_bytes = bytes(payload[:payload_length])
+            assert len(payload_bytes) == payload_length
+            assert len(payload_type.encode("utf-8")) > 0
+            expected = canonical_pae(payload_type, payload_bytes)
+            actual = invoke(binary, payload_type, payload_bytes.hex())
+            case_id = f"metamorphic-{type_index}-{length_index}"
+            assert actual.returncode == 0, (case_id, actual.returncode)
+            assert actual.stdout.strip() == expected.hex(), case_id
+            metamorphic_cases += 1
+    assert metamorphic_cases == 64, metamorphic_cases
     for kind, hex_body in (("", "aa"), ("application/x-test", "f"), ("application/x-test", "zz")):
         invalid = invoke(binary, kind, hex_body)
         assert invalid.returncode == 2, (kind, invalid.returncode)
@@ -76,6 +104,7 @@ def main() -> int:
         "schema": "szl.rust-wire-parity/v1",
         "state": "PASS_SOURCE_ONLY",
         "reference_vectors": matched,
+        "metamorphic_cases": metamorphic_cases,
         "negative_controls": 3,
         "python_reference_sha256": hashlib.sha256(
             (root / "src/szl_receipt/_canonical.py").read_bytes()).hexdigest(),
