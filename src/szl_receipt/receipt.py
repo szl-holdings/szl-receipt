@@ -165,11 +165,17 @@ def verify_receipt(
         ``(False, "<error description>")`` — any other failure.
     """
     # UNSIGNED-honest contract — never report a pass for unsigned
-    if not envelope.get("signed", False):
+    if envelope.get("signed") is not True:
         return False, "unsigned-honest"
 
     if not public_key_pem:
         return False, "no public key provided"
+
+    # Advisory algorithm metadata is outside DSSE PAE. Reject contradictory
+    # claims without treating the label as cryptographic evidence. Older
+    # signed envelopes lacking this advisory field remain verifiable.
+    if "algo" in envelope and envelope["algo"] != _ALGO_SIGNED:
+        return False, "algorithm-mismatch"
 
     # The low-level verifier is intentionally fixed to PAYLOAD_TYPE. Refuse a
     # caller-visible envelope that declares anything else so metadata cannot
