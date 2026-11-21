@@ -43,7 +43,7 @@ with an **UNSIGNED-honest** fallback when no signing key is present.
 Built on maintained libraries — no hand-rolled DSSE/crypto:
 [`in-toto-attestation` 0.9.3](https://pypi.org/project/in-toto-attestation/)
 (ITE-6 Statement/predicate bindings) for attestation construction and
-[`cryptography` 50.0.1](https://pypi.org/project/cryptography/) for the ECDSA
+[`cryptography` 50.0.2](https://pypi.org/project/cryptography/) for the ECDSA
 P-256 signature primitive. Those are the exact versions the conformance suite
 was last run against (`[tool.szl.release].verified_against`); the package
 declares compatible ranges (`cryptography>=42,<60`, `in-toto-attestation>=0.9.3,<1.0`)
@@ -93,6 +93,55 @@ env2 = sign_receipt(r, private_key_pem=priv_pem, organ="a11oy")
 
 ok, detail = verify_receipt(env2, public_key_pem=pub_pem)   # -> (True, "ok")
 ```
+
+### Opt-in positioned receipts
+
+Install the `positioned` extra from this checkout (`python -m pip install '.[positioned]'`).
+Use `szl_receipt.positioned` when a verifier already has a trusted log
+position, receipt purpose and signer policy. The existing APIs and their bytes
+are unchanged: `sign_receipt`, `verify_receipt`, the SDK, Rust preview and lake
+vector do not implicitly opt in, and neither verifier downgrades to the other.
+
+```python
+from szl_receipt import Receipt, generate_keypair
+from szl_receipt.positioned import KeyWindow, sign_positioned_receipt, verify_positioned_receipt
+
+private, public = generate_keypair()  # ephemeral demonstration only
+envelope = sign_positioned_receipt(
+    Receipt("audit", {"check": "passed"}), private, log_id="ledger-A", position=7,
+)
+# A real verifier obtains the public key/window and expected position independently.
+policy = KeyWindow(public, log_id="ledger-A", kind="audit", first=5, last=10)
+assert verify_positioned_receipt(envelope, window=policy, expected_position=7) == (True, "ok")
+```
+
+The payload is [RFC 8785 JCS](https://www.rfc-editor.org/rfc/rfc8785) UTF-8
+over exactly `{"body": <object>, "log_id": <string>, "position": <integer>}`.
+The [JCS implementation](https://github.com/trailofbits/rfc8785.py) handles
+UTF-16 property ordering and ECMAScript number formatting; use strings for
+high-precision IDs rather than Python integers outside the safe integer range.
+The signing API accepts a Python object, not raw JSON text. If your source is
+raw JSON, reject duplicate names while parsing it, before converting it to a
+dict; a dict cannot preserve evidence of duplicates it has already discarded.
+The standard DSSE PAE covers those exact bytes and
+`application/vnd.szl.receipt.positioned.v1.<kind>+json`. Changing the type
+changes the signed bytes, even if the payload is unchanged. `kind` matches
+`[a-z][a-z0-9-]{0,63}`; `log_id` is a case-sensitive 1–200 character ASCII
+identifier matching `[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}`.
+
+The envelope has exactly `payloadType`, `payload` and `signatures`. It has
+one ECDSA P-256/SHA-256 signature with a SHA-256 DER-SPKI key ID, or an
+empty signature list when keyless. The ID is a lookup hint, not a trust root.
+Verification requires a pinned public key, exact log and kind, matching
+external position and an inclusive `[first, last]` window of nonnegative safe
+integers; it never trusts a policy declared by the envelope. Do not derive
+`expected_position` or the policy from the receipt being checked.
+
+This profile adapts [Tracekit's positional verification and purpose separation](https://arxiv.org/html/2609.35659)
+to the library's existing ECDSA/DSSE stack. A passing check does not prove
+log inclusion, append order, wall-clock signing time, witness consensus or
+non-equivocation. Continue to use v1 for existing consumers; historical
+receipts are not reinterpreted, and there is no migration or automatic rollout.
 
 ## Envelope schema
 
@@ -162,7 +211,7 @@ cosign verify-blob --key organ.pub \
   compatibility claim was false; receipts signed before 0.4 must be re-issued.)
 - **Pinned maintained libraries:** attestation statements are constructed and
   validated through `in-toto-attestation` 0.9.3; signatures are ECDSA P-256
-  via `cryptography` 50.0.1. No hand-rolled DSSE or crypto primitives.
+  via `cryptography`. No hand-rolled DSSE or crypto primitives.
 
 ## GovernedAction v1: one release truth, not six disconnected greens
 

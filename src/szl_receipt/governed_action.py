@@ -10,7 +10,7 @@ Migration (v11 §7.1 / B-08): the Statement is structurally validated through
 the pinned ``in-toto-attestation`` 0.9.3 bindings (:mod:`._intoto`), the DSSE
 PAE is the single spec-pinned implementation in :mod:`._canonical` (decimal
 lengths over the DECODED payload bytes), and signature arithmetic is the
-pinned ``cryptography`` 50.0.1 library (ECDSA P-256). No hand-rolled DSSE or
+conformance-tested ``cryptography`` library (ECDSA P-256). No hand-rolled DSSE or
 statement plumbing remains. The predicate type
 ``https://szl.dev/GovernedAction/v1``, the canonical-JSON payload, the sha256
 subject digests, and the standard ``signatures`` array are unchanged.
