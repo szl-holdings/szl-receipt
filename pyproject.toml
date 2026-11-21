@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 [project]
 name = "szl-receipt-dsse"
 version = "0.3.4"
-description = "Shared signed-receipt library for SZL components — DSSE/ECDSA-P256-SHA256 signing on maintained libraries (verified against in-toto-attestation 0.9.3 + cryptography 50.0.1; cosign-compatible, UNSIGNED-honest fallback) plus in-toto/SLSA-shaped attestation and EU AI Act / NIST AI RMF compliance-evidence mapping."
+description = "Shared signed-receipt library for SZL components — DSSE/ECDSA-P256-SHA256 signing on maintained libraries (cosign-compatible, UNSIGNED-honest fallback) plus in-toto/SLSA-shaped attestation and EU AI Act / NIST AI RMF compliance-evidence mapping."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
@@ -21,8 +21,8 @@ classifiers = [
 ]
 # Pinned per the v11 doctrine §7.1 (no hand-rolled DSSE/crypto; B-08).
 dependencies = [
-    # Verified against cryptography 50.0.1 and in-toto-attestation 0.9.3 (see
-    # [tool.szl.release].verified_against). Ranges, not exact pins: a library
+    # See [tool.szl.release].verified_against for the frozen test versions.
+    # Ranges, not exact pins: a library
     # that pins exact versions cannot coexist with any other package in the
     # same environment that resolves either dependency differently.
     "cryptography>=42,<60",
@@ -30,9 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+positioned = ["rfc8785>=0.1.4,<0.2"]
 dev = [
     "pytest>=8,<10",
     "ruff>=0.15,<0.18",
+    "rfc8785>=0.1.4,<0.2",
 ]
 release = [
     "build>=1.2,<2",
@@ -45,7 +47,7 @@ release = [
 # development/release environment to the exact versions used for DSSE and
 # in-toto conformance.  uv.lock carries the transitive wheels and hashes.
 constraint-dependencies = [
-    "cryptography==50.0.1",
+    "cryptography==50.0.2",
     "in-toto-attestation==0.9.3",
 ]
 # Constrain isolated builds resolved by uv to the same backend recorded in the
@@ -68,4 +70,4 @@ testpaths = ["tests"]
 
 [tool.szl.release]
 import_names = ["szl_receipt"] # wheel top-level import names; the release gate fails if the built wheel differs
-verified_against = { cryptography = "50.0.1", in-toto-attestation = "0.9.3" } # exact versions the DSSE/PAE conformance suite was last run against
+verified_against = { cryptography = "50.0.2", in-toto-attestation = "0.9.3" } # exact versions the DSSE/PAE conformance suite was last run against

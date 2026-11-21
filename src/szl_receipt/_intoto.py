@@ -12,7 +12,7 @@ package ships the ITE-6 protobuf bindings —
 ``in_toto_attestation.v1.resource_descriptor`` — and, by design, no DSSE
 envelope code (verified by inspection of the 0.9.3 wheel). The DSSE
 transport therefore stays in :mod:`._canonical` (spec-pinned PAE) and the
-signature arithmetic in the pinned ``cryptography`` 50.0.1 (ECDSA P-256).
+signature arithmetic in the conformance-tested ``cryptography`` library (ECDSA P-256).
 
 Every in-toto Statement this package emits is constructed and validated
 through :func:`statement_from_parts`, so the ITE-6 minimums — the v1 type

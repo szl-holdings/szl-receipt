@@ -11,7 +11,7 @@ Signing algorithm (DSSE v1, cosign-compatible):
      lengths over the DECODED payload bytes — see ._canonical)
   3. ECDSA P-256 over SHA-256 of the PAE -> DER signature -> base64
 
-All key and signature arithmetic is the pinned ``cryptography`` 50.0.1
+All key and signature arithmetic is the conformance-tested ``cryptography``
 library; keys are constrained to ECDSA P-256 (the browser-verifiable curve
 locked by the v11 doctrine). in-toto Statement construction lives in
 ``_intoto`` (pinned ``in-toto-attestation`` 0.9.3).
