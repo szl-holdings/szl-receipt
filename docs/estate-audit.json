@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "repo_name": "szl-receipt",
+    "last_audit_date": "2026-11-22",
+    "loop_level": 1
+  },
+  "estate_context": {
+    "purpose_domain": "DSSE receipt library (PyPI szl-receipt-dsse) with JCS canonicalization, purpose-bound signatures, conformance artifacts, SBOM, and gated model/package publishing",
+    "baseline_commit": "3870130741c0120194c57a9d98620776bd8e4e06",
+    "leader_profiles": [
+      {
+        "name": "secure-deployment-labs/dsse",
+        "url": "https://github.com/secure-deployment-labs/dsse",
+        "checked_date": "2026-11-22"
+      },
+      {
+        "name": "pypa/warehouse",
+        "url": "https://github.com/pypa/warehouse",
+        "checked_date": "2026-11-22"
+      }
+    ]
+  },
+  "evidence_index": {
+    "publications": [],
+    "gap_register": [
+      "Conformance vectors remain unestablished; no L1 evidence fixes the expected vector set, provenance, and pass criteria.",
+      "Root pyproject.toml is tracked with setuptools backend; residue is unreviewed L1 packaging/publication chain, including build metadata and release references, not absent packaging.",
+      "ci.yml versus base-python-ci.yml scopes remain unresolved; L1 has not established which workflow owns required checks and reusable-workflow inputs.",
+      "Tracked tests/ is exercised by CI; residue is unmeasured L1 coverage breadth and test-to-conformance mapping, not absent tests."
+    ],
+    "prioritized_changes": [
+      "Establish conformance vectors with provenance, expected outputs, pass criteria, and CI execution evidence.",
+      "Next loop: review tracked pyproject.toml packaging and CI-exercised tests/ for release-chain consistency, coverage breadth, and conformance mapping.",
+      "Resolve ci.yml versus base-python-ci.yml ownership, required-check scope, and reusable-workflow contract."
+    ]
+  },
+  "execution_trace": {}
+}
