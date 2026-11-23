@@ -143,6 +143,7 @@ jobs:
   # ── Gate 4: sign — run manifest, Model BOM, weights (Sigstore keyless) ──
   sign:
     needs: model-bom
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
