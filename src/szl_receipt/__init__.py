@@ -12,7 +12,6 @@ ORCID: 0009-0001-0110-4173
 
 Public API
 ----------
-::
 
     from szl_receipt import Receipt, sign_receipt, verify_receipt, generate_keypair, PAYLOAD_TYPE
 
@@ -31,10 +30,10 @@ Public API
 
 cosign verification
 -------------------
-Save the public key to ``organ.pub``, then::
+Save the public key to `organ.pub`, then::
 
-    cosign verify-blob --key organ.pub \\
-        --payload <(echo -n "$payload_b64" | base64 -d) \\
+    cosign verify-blob --key organ.pub \
+        --payload <(echo -n "$payload_b64" | base64 -d) \
         --signature <(echo -n "$sig_b64" | base64 -d)
 """
 from __future__ import annotations
@@ -77,7 +76,7 @@ from .pci import (
     verify_pci_receipt,
 )
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 __author__ = "SZL Contributors"
 __license__ = "Apache-2.0"
 
