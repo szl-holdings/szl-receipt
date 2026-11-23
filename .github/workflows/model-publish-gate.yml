@@ -35,11 +35,8 @@ concurrency:
 
 permissions:
   contents: read
-  attestations: write
-  id-token: write                      # Sigstore keyless identity
 
 env:
-  HF_TOKEN: ${{ secrets.HF_TOKEN_PUBLISH }}   # write-scoped, rotates quarterly
   BOM_OUT: bom/model-bom.cdx.json
   MANIFEST_OUT: release/run-manifest.json
 
@@ -147,6 +144,10 @@ jobs:
   sign:
     needs: model-bom
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write                      # Sigstore keyless identity
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Emit run manifest
@@ -196,6 +197,10 @@ jobs:
   # ── Final gate: publication_eligible === true, then publish ─────────────
   publish:
     needs: conformance
+    if: >-
+      needs.conformance.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: hub-production           # requires required-approver review
     steps:
@@ -233,6 +238,8 @@ jobs:
             --template cards/model-card.md.tmpl \
             --out release/README.md
       - name: Upload to Hub (gated)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN_PUBLISH }}
         run: |
           huggingface-cli upload "${{ inputs.model_repo }}" \
             "${{ inputs.model_dir }}" . \
