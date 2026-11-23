@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "repo_name": "szl-receipt",
+    "last_audit_date": "2026-11-22",
+    "loop_level": 1
+  },
+  "estate_context": {
+    "purpose_domain": "DSSE receipt library (PyPI szl-receipt-dsse) with JCS canonicalization, purpose-bound signatures, conformance artifacts, SBOM, and gated model/package publishing",
+    "baseline_commit": "3870130741c0120194c57a9d98620776bd8e4e06",
+    "leader_profiles": [
+      {
+        "name": "secure-deployment-labs/dsse",
+        "url": "https://github.com/secure-deployment-labs/dsse",
+        "checked_date": "2026-11-22"
+      },
+      {
+        "name": "pypa/warehouse",
+        "url": "https://github.com/pypa/warehouse",
+        "checked_date": "2026-11-22"
+      }
+    ]
+  },
+  "evidence_index": {
+    "publications": [],
+    "gap_register": [
+      "Head commit #90 'Add opt-in positioned receipts with JCS and purpose-bound DSSE signatures' lands a new opt-in receipt path at the baseline, and the supplied L1 inventory (directory names conformance/, docs/, artifacts/, cards/, bom/) does not establish which conformance vectors or documents cover it",
+      "The supplied top-level listing has no pyproject.toml even though publish-pypi.yml, model-publish-gate.yml, and a PyPI badge for szl-receipt-dsse are present, so the packaging metadata behind publication is not visible in this L1 inventory",
+      "Both ci.yml and base-python-ci.yml workflows exist while the README CI badge points only at base-python-ci.yml, so their respective scopes and gating roles are not established by the supplied facts",
+      "The supplied top-level listing shows no tests/ directory despite base-python-ci.yml, ci.yml, and rust-wire-parity.yml workflows and a conformance/ directory, so the test layout relative to conformance assets is not established at L1"
+    ],
+    "prioritized_changes": [
+      "Gap 1: extend the conformance inventory to enumerate JCS and purpose-bound DSSE signature vectors for the opt-in positioned receipts from #90, cross-linking conformance/ and docs/ so the new path has traceable evidence",
+      "Gap 3: document the division of labor and required-check status of ci.yml versus base-python-ci.yml (and rust-wire-parity.yml), and align the README CI badge with the workflow that actually gates merges",
+      "Gaps 2 and 4: in the next loop, locate the build/packaging configuration consumed by publish-pypi.yml and enumerate the test tree exercised by CI, since pyproject.toml and tests/ are absent from the supplied top-level listing"
+    ]
+  },
+  "execution_trace": {}
+}
