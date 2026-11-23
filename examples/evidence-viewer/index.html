@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-FileCopyrightText: 2024 SZL Contributors -->
+<!--
+  Receipt-evidence flagship viewer (standalone, zero dependencies).
+  Fetch JSON from the read-only evidence service:
+    same origin by default, or ?api=https://host:port
+  Doctrine: MISSING is rendered as MISSING with its named gap — never
+  as zero, passed, or hidden.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SZL Receipt Evidence</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d; --text: #e6edf3;
+    --dim: #8b949e; --measured: #3fb950; --reproduced: #56d364;
+    --self: #d29922; --missing: #f85149; --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    padding: 24px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--dim); margin-bottom: 20px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px 16px; min-width: 150px;
+  }
+  .card .n { font-size: 26px; }
+  .card .l { color: var(--dim); font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+  th { color: var(--dim); font-weight: 600; background: var(--panel); }
+  .badge {
+    display: inline-block; border-radius: 10px; padding: 1px 9px;
+    font-size: 12px; font-weight: 700;
+  }
+  .b-measured { background: var(--measured); color: #001900; }
+  .b-reproduced { background: var(--reproduced); color: #001900; }
+  .b-self_asserted { background: var(--self); color: #231a00; }
+  .b-missing { background: var(--missing); color: #280000; }
+  .b-fully_evidenced { background: var(--measured); color: #001900; }
+  .b-partially_evidenced { background: var(--self); color: #231a00; }
+  .b-inventory_only { background: var(--missing); color: #280000; }
+  section { margin-top: 28px; }
+  section > h2 { font-size: 16px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover { background: var(--panel); }
+  .gap { color: var(--dim); font-style: italic; }
+  code { color: var(--accent); }
+  #detail .slotrow td:first-child { width: 130px; font-weight: 600; }
+  .claim { padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .claim:last-child { border-bottom: none; }
+  .mono-dim { color: var(--dim); font-size: 12px; word-break: break-all; }
+  .err { color: var(--missing); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<h1>SZL receipt evidence</h1>
+<div class="sub">Measured, reproduced, self-asserted, and missing — assertion never renders as verification.</div>
+<div id="err" class="err"></div>
+<div class="cards" id="cards"></div>
+<section>
+  <h2>Models</h2>
+  <table id="models"><thead>
+    <tr><th>model</th><th>revision</th><th>classification</th></tr>
+  </thead><tbody></tbody></table>
+</section>
+<section id="detail" hidden>
+  <h2 id="detail-title"></h2>
+  <div id="detail-body"></div>
+</section>
+<section>
+  <h2>Negative-evidence ledger</h2>
+  <p class="sub">Every named gap, stale horizon, and self-assertion across the inventory. Missing is data.</p>
+  <table id="negative"><thead>
+    <tr><th>model</th><th>slot</th><th>issue</th><th>named gap</th></tr>
+  </thead><tbody></tbody></table>
+</section>
+<script>
+"use strict";
+const q = new URLSearchParams(location.search);
+const API = (q.get("api") || "").replace(/\/$/, "") || "";
+const SLOTS = ["identity", "dataset", "evaluation", "environment", "safety", "publication"];
+const $ = (id) => document.getElementById(id);
+
+function badge(status) {
+  return '<span class="badge b-' + String(status).toLowerCase() + '">' + status + "</span>";
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+async function get(path) {
+  const res = await fetch(API + path);
+  if (!res.ok) throw new Error(path + " -> " + res.status);
+  return res.json();
+}
+
+function renderCoverage(cov) {
+  const counts = cov.classification_counts;
+  const cards = [
+    ["denominator", cov.denominator],
+    ["fully evidenced", counts.fully_evidenced],
+    ["partially evidenced", counts.partially_evidenced],
+    ["inventory only", counts.inventory_only]
+  ];
+  $("cards").innerHTML = cards.map(([l, n]) =>
+    '<div class="card"><div class="n">' + n + '</div><div class="l">' + l + "</div></div>"
+  ).join("");
+}
+
+function renderModels(data) {
+  const tb = $("models").querySelector("tbody");
+  tb.innerHTML = "";
+  for (const m of data.models) {
+    const tr = document.createElement("tr");
+    tr.className = "clickable";
+    tr.innerHTML = "<td>" + esc(m.model_id) + "</td><td><code>" +
+      esc(m.revision.slice(0, 12)) + '…</code></td><td>' +
+      badge(m.classification) + "</td>";
+    tr.onclick = () => showModel(m.model_id);
+    tb.appendChild(tr);
+  }
+}
+
+function claimHtml(slotEntry, slot) {
+  if (!slotEntry || slotEntry.status === "MISSING") {
+    const gap = (slotEntry && slotEntry.named_gap) || ("no claims recorded for slot " + slot);
+    return '<div class="claim">' + badge("MISSING") + ' <span class="gap">' +
+      esc(gap) + "</span></div>";
+  }
+  let out = "";
+  for (const c of slotEntry.claims || []) {
+    out += '<div class="claim">' + badge(c.status) + " <b>" + esc(c.claim_id) + "</b>";
+    if (c.summary) out += " — " + esc(c.summary);
+    out += "<br>";
+    if (c.evidence_uri) {
+      out += '<div class="mono-dim">evidence: <a href="' + esc(c.evidence_uri) +
+        '">' + esc(c.evidence_uri) + "</a></div>";
+      out += '<div class="mono-dim">digest: <code>' + esc(c.artifact_digest) +
+        "</code></div>";
+      out += '<div class="mono-dim">evaluated ' + esc(c.evaluated_at) + " by " +
+        esc(c.evaluator) + "</div>";
+    }
+    if (c.status === "SELF_ASSERTED" || c.status === "MISSING") {
+      out += '<div class="mono-dim">named gap: ' + esc(c.named_gap ||
+        "self-asserted; no measured or reproduced artifact linked") + "</div>";
+    }
+    out += "</div>";
+  }
+  const gap = slotEntry.named_gap;
+  if (gap) out += '<div class="gap">gap: ' + esc(gap) + "</div>";
+  return out || '<div class="gap">no claims recorded for slot ' + slot + "</div>";
+}
+
+async function showModel(id) {
+  const rec = await get("/api/models/" + encodeURIComponent(id));
+  $("detail").hidden = false;
+  $("detail-title").textContent = id + " @ " + rec.revision.slice(0, 12) + " — " + rec.classification;
+  let html = '<table>';
+  for (const slot of SLOTS) {
+    html += '<tr class="slotrow"><td>' + slot + "</td><td>" +
+      claimHtml(rec.slots[slot], slot) + "</td></tr>";
+  }
+  html += "</table>";
+  $("detail-body").innerHTML = html;
+  $("detail").scrollIntoView({ behavior: "smooth" });
+}
+
+function renderNegative(cov) {
+  const tb = $("negative").querySelector("tbody");
+  tb.innerHTML = "";
+  for (const n of cov.negative_evidence) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td>" + esc(n.model_id) + '</td><td>' + esc(n.slot) +
+      "</td><td>" + badge(n.issue) + '</td><td class="gap">' + esc(n.named_gap) + "</td>";
+    tb.appendChild(tr);
+  }
+}
+
+(async () => {
+  try {
+    const [models, cov] = await Promise.all([get("/api/models"), get("/api/coverage")]);
+    renderCoverage(cov);
+    renderModels(models);
+    renderNegative(cov);
+  } catch (e) {
+    $("err").textContent = "evidence service unreachable: " + e.message +
+      " — start it with python -m szl_receipt.evidence.service";
+  }
+})();
+</script>
+</body>
+</html>

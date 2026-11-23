@@ -1,0 +1,29 @@
+{
+  "model_id": "szl-canary-partial",
+  "revision": "a030c75e2fbfda73db36a6870e2a56189f90ff02",
+  "claims": [
+    {
+      "claim_id": "identity/base-and-card",
+      "slot": "identity",
+      "status": "MEASURED",
+      "summary": "card identity fields extracted from the release BOM by CI",
+      "evidence_uri": "https://example.invalid/releases/v2/bom/model-bom.cdx.json",
+      "artifact_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+      "evaluated_at": "2026-11-22T09:00:00Z",
+      "evaluator": "szl-receipt-ci"
+    },
+    {
+      "claim_id": "dataset/vendor-statement",
+      "slot": "dataset",
+      "status": "SELF_ASSERTED",
+      "summary": "dataset card says the corpus is curated and clean",
+      "notes": "assertion by the dataset publisher; no artifact on file"
+    },
+    {
+      "claim_id": "evaluation/none-yet",
+      "slot": "evaluation",
+      "status": "MISSING",
+      "named_gap": "no held-out evaluation has run for this revision yet"
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "model_id": "szl-canary-measured",
+  "revision": "32569bade2790825162d4cd08888e3b6d5832a0b",
+  "claims": [
+    {
+      "claim_id": "identity/base-and-card",
+      "slot": "identity",
+      "status": "MEASURED",
+      "summary": "card identity fields extracted from the release BOM by CI",
+      "evidence_uri": "https://example.invalid/releases/v1/bom/model-bom.cdx.json",
+      "artifact_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "evaluated_at": "2026-11-21T10:00:00Z",
+      "evaluator": "szl-receipt-ci"
+    },
+    {
+      "claim_id": "dataset/admission-digest",
+      "slot": "dataset",
+      "status": "MEASURED",
+      "summary": "training data admitted under the recorded sha256 digest",
+      "evidence_uri": "https://example.invalid/releases/v1/receipts/dataset-admission.json",
+      "artifact_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+      "evaluated_at": "2026-11-21T10:05:00Z",
+      "evaluator": "szl-receipt-ci"
+    },
+    {
+      "claim_id": "evaluation/heldout-suite",
+      "slot": "evaluation",
+      "status": "MEASURED",
+      "summary": "held-out generation suite, prompts withheld from training splits",
+      "evidence_uri": "https://example.invalid/releases/v1/release/heldout-eval.json",
+      "artifact_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+      "evaluated_at": "2026-11-21T10:10:00Z",
+      "evaluator": "szl-receipt-ci",
+      "max_age_days": 365
+    },
+    {
+      "claim_id": "environment/build-graph",
+      "slot": "environment",
+      "status": "MEASURED",
+      "summary": "pinned build graph recorded in the run manifest",
+      "evidence_uri": "https://example.invalid/releases/v1/release/run-manifest.json",
+      "artifact_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+      "evaluated_at": "2026-11-21T10:15:00Z",
+      "evaluator": "szl-receipt-ci"
+    },
+    {
+      "claim_id": "safety/redteam-suite",
+      "slot": "safety",
+      "status": "REPRODUCED",
+      "summary": "refusal regression suite reproduced by an independent runner",
+      "evidence_uri": "https://example.invalid/releases/v1/safety/redteam.json",
+      "artifact_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+      "evaluated_at": "2026-11-21T11:00:00Z",
+      "evaluator": "independent-verify-runner-01"
+    },
+    {
+      "claim_id": "publication/gate-record",
+      "slot": "publication",
+      "status": "MEASURED",
+      "summary": "publication gate record; admission kept separate from evaluation",
+      "evidence_uri": "https://example.invalid/releases/v1/release/publication-gate.json",
+      "artifact_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+      "evaluated_at": "2026-11-21T11:30:00Z",
+      "evaluator": "szl-receipt-ci"
+    }
+  ]
+}
