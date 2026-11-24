@@ -92,3 +92,18 @@ def test_missing_backend_identity_fails():
     del doc["runtime"]["backend_true_identity"]
     errs = validate(doc)
     assert any("backend_true_identity" in e for e in errs)
+
+
+def test_explicit_default_tag_cannot_mask_shared_backend():
+    for rail in (
+        "treyleo16/claude-opus-5-5",
+        "treyleo16/gpt-6-1-sol",
+        "treyleo16/gpt-6-astra",
+    ):
+        doc = _valid_receipt()
+        tagged = f"{rail}:latest"
+        doc["runtime"] = {"declared_backend": tagged, "backend_true_identity": rail}
+        assert any("RAIL-ALIASING" in error for error in validate(doc)), tagged
+
+        doc["runtime"]["backend_true_identity"] = "gemma4:31b"
+        assert validate_or_raise(doc) is True
