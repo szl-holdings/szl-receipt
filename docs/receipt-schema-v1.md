@@ -17,6 +17,8 @@ Canonical, machine-verifiable receipt binding a SZLHOLDINGS HF model to its GitH
 ## Rail-honesty rule (hard failure)
 Measured 2026-11-23 via ollama /api/tags remote metadata: the community rails treyleo16/claude-opus-5-5, treyleo16/gpt-6-1-sol, and treyleo16/gpt-6-astra all resolve to ONE shared remote backend gemma4:31b at ollama.com. If a receipt declares one of these rails as declared_backend, backend_true_identity MUST be the measured shared backend (gemma4:31b). Any attempt to present an aliased rail as a distinct model identity is rejected with a RAIL-ALIASING VIOLATION. Genuine cloud rails (kimi-k3.1-pro, mistral-large-4, glm-5.3) record their own identities.
 
+The rule covers both the bare rail name and its explicit Ollama default tag, `:latest`. Other version tags require their own backend measurement. A passing receipt validates the declared binding. It supplies no independent council vote.
+
 ## Validation
 Pure-stdlib validator: szl_receipt.schema_v1 (validate() returns error list; validate_or_raise() raises SchemaError). Tests: tests/test_schema_v1.py (valid receipt passes; missing fields fail; bad sha256 fails; branch-name-as-commit fails; aliased rail honest passes; aliased rail disguised identity rejected).
 

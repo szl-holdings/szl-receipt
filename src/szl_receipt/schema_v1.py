@@ -15,9 +15,13 @@ ISO_RE = re.compile("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 # all three resolve to ONE shared remote backend gemma4:31b at ollama.com. They are advisory
 # rails only and may never be recorded as distinct model identities.
 ALIASED_RAILS = {
-    "treyleo16/claude-opus-5-5": "gemma4:31b",
-    "treyleo16/gpt-6-1-sol": "gemma4:31b",
-    "treyleo16/gpt-6-astra": "gemma4:31b",
+    spelling: "gemma4:31b"
+    for rail in (
+        "treyleo16/claude-opus-5-5",
+        "treyleo16/gpt-6-1-sol",
+        "treyleo16/gpt-6-astra",
+    )
+    for spelling in (rail, f"{rail}:latest")
 }
 
 REQUIRED_TOP = ("schema", "receipt_id", "model_id", "artifacts", "source_of_truth",
