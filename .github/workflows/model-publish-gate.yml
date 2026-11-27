@@ -4,6 +4,14 @@
 #    generate says otherwise."
 # A model MAY NOT be uploaded to the Hub unless every gate below passes and
 # the receipt verifies. Wire as a required status check on the release branch.
+#
+# 2026-11-27 (frontier #5): the last job-running failure (run 33456176179,
+# 31 Aug 2026, 7:47 PM ET) was gitleaks/gitleaks-action refusing to start
+# without a paid GITLEAKS_LICENSE on an org repo. No leak was reported.
+# The OSS gitleaks CLI (pinned tarball sha256) is used instead; the stdlib
+# pattern grep is kept. Required dispatch inputs decontam_verdict,
+# redteam_report_digest and redteam_report_path fail closed when missing.
+# Held-out min pass rate remains 0.80. Existing gates are not removed.
 name: model-publish-gate
 
 on:
@@ -25,6 +33,15 @@ on:
       allow_major:
         description: "Set 'yes' to permit a major-version release"
         default: "no"
+      decontam_verdict:
+        description: "Path in this repo to contamination_verdict.json (required; missing or non-PASS fails closed)"
+        required: true
+      redteam_report_digest:
+        description: "sha256 of the per-release red-team report (64 lowercase hex); required"
+        required: true
+      redteam_report_path:
+        description: "Path in this repo to the red-team report whose sha256 must equal redteam_report_digest"
+        required: true
   push:
     branches-ignore: ["main"]          # never publish from a normal push
     paths: ["artifacts/model/**"]
@@ -46,36 +63,89 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Secret pattern scan (stdlib)
         run: |
           # gitleaks for orgs is paid; the scan is replaced with a self-contained grep
           # Split the marker literal so this scanner does not match its own source.
           pattern='AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36,}|sk-[A-Za-z0-9]{20,}|-----BEGIN ''PRIVATE KEY-----'
-          if grep -rE --exclude-dir=.git -- "$pattern" . >/dev/null; then
+          set +e
+          grep -rE --exclude-dir=.git -- "$pattern" . >/dev/null
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
             echo '::error::Secret-shaped material detected; inspect locally without exposing values.'
             exit 1
-          else
-            status=$?
-            if [ "$status" -ne 1 ]; then
-              echo '::error::Secret scan failed to read its selected files.'
-              exit 1
-            fi
           fi
-      - name: Reject pickle payloads
+          if [ "$status" -ne 1 ]; then
+            echo '::error::Secret scan failed to read its selected files.'
+            exit 1
+          fi
+      - name: Secret scan (gitleaks OSS CLI)
+        env:
+          GITLEAKS_VERSION: "8.21.2"
+          GITLEAKS_TARBALL_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
         run: |
-          if find "${{ inputs.model_dir }}" -name '*.pkl' -o -name '*.pt' -o -name 'pytorch_model.bin' | grep .; then
+          set -euo pipefail
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_TARBALL_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+          CONFIG_ARG=()
+          if [ -f .gitleaks.toml ]; then CONFIG_ARG=(--config .gitleaks.toml); fi
+          gitleaks detect \
+            --source . \
+            --no-git \
+            "${CONFIG_ARG[@]}" \
+            --redact \
+            --verbose \
+            --exit-code 1
+      - name: Reject pickle payloads
+        env:
+          MODEL_DIR: ${{ inputs.model_dir || 'artifacts/model' }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$MODEL_DIR" ]; then
+            echo "::error::model_dir is missing: $MODEL_DIR"
+            exit 1
+          fi
+          if find "$MODEL_DIR" \( -name '*.pkl' -o -name '*.pt' -o -name 'pytorch_model.bin' \) -print | grep -q .; then
             echo "::error::Unpickleable artifacts found. Ship safetensors only."; exit 1
           fi
       - name: Static scan (semgrep)
         uses: semgrep/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1
         with: { config: p/ci }
 
-  # ── Gate 1: reproduce the dataset digest ────────────────────────────────
-  dataset-provenance:
+  # ── Gate 0b: decontam verdict + red-team report digest (fail closed) ──
+  evidence-admission:
     needs: scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require decontam verdict and red-team report digest
+        env:
+          DECONTAM_VERDICT: ${{ inputs.decontam_verdict }}
+          REDTEAM_DIGEST: ${{ inputs.redteam_report_digest }}
+          REDTEAM_PATH: ${{ inputs.redteam_report_path }}
+          EVIDENCE_OUT: release/evidence-admission.json
+        run: python3 -I -B scripts/assert_publish_evidence.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: evidence-admission, path: release/evidence-admission.json }
+
+  # ── Gate 1: reproduce the dataset digest ────────────────────────────────
+  dataset-provenance:
+    needs: evidence-admission
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Recompute dataset digest
         run: |
           python scripts/dataset_digest.py \
@@ -96,23 +166,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Run held-out generation eval
         run: |
           python eval/run_heldout.py \
-            --model "${{ inputs.model_dir }}" \
-            --config "${{ inputs.eval_config }}" \
+            --model "${{ inputs.model_dir || 'artifacts/model' }}" \
+            --config "${{ inputs.eval_config || 'eval/heldout_generate.yaml' }}" \
             --out release/heldout-eval.json
       - name: Gate on pass rate
         run: |
           python - <<'PY'
           import json, sys
           r = json.load(open('release/heldout-eval.json'))
-          need = float("${{ inputs.min_pass_rate }}")
+          need = float("${{ inputs.min_pass_rate || '0.80' }}")
           print(f"held-out pass rate: {r['pass_rate']:.4f} (required {need})")
           sys.exit(0 if r['pass_rate'] >= need else 1)
           PY
       - name: Refusal / abstention eval must not regress
-        run: python eval/run_refusal.py --model "${{ inputs.model_dir }}" --assert-no-regression
+        run: python eval/run_refusal.py --model "${{ inputs.model_dir || 'artifacts/model' }}" --assert-no-regression
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: heldout-eval, path: release/heldout-eval.json }
 
@@ -122,11 +194,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: heldout-eval, path: release/ }
       - name: Generate Model BOM
         run: |
           python scripts/build_model_bom.py \
-            --model-dir "${{ inputs.model_dir }}" \
-            --base-model "$(yq '.base_model' ${{ inputs.eval_config }})" \
+            --model-dir "${{ inputs.model_dir || 'artifacts/model' }}" \
+            --base-model "$(yq '.base_model' ${{ inputs.eval_config || 'eval/heldout_generate.yaml' }})" \
             --dataset-manifest data/dataset-manifest.json \
             --eval release/heldout-eval.json \
             --materials git://$(git rev-parse HEAD) \
@@ -135,7 +211,7 @@ jobs:
         run: cyclonedx validate --input-file "${BOM_OUT}" --fail-on-errors
       - name: Vulnerability scan of the environment (grype)
         run: |
-          syft "${{ inputs.model_dir }}" -o cyclonedx-json=/tmp/env.cdx.json
+          syft "${{ inputs.model_dir || 'artifacts/model' }}" -o cyclonedx-json=/tmp/env.cdx.json
           grype sbom:/tmp/env.cdx.json --fail-on high
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: model-bom, path: bom/ }
@@ -151,10 +227,16 @@ jobs:
       id-token: write                      # Sigstore keyless identity
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: heldout-eval, path: release/ }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: model-bom, path: bom/ }
       - name: Emit run manifest
         run: |
           python scripts/emit_run_manifest.py \
-            --model-dir "${{ inputs.model_dir }}" \
+            --model-dir "${{ inputs.model_dir || 'artifacts/model' }}" \
             --eval release/heldout-eval.json \
             --bom "${BOM_OUT}" \
             --git-sha "${GITHUB_SHA}" \
@@ -168,14 +250,14 @@ jobs:
           cosign sign-blob --yes "${BOM_OUT}" \
             --output-signature "${BOM_OUT}.sig" \
             --output-certificate "${BOM_OUT}.crt"
-          sha256sum $(find "${{ inputs.model_dir }}" -name '*.safetensors') \
+          sha256sum $(find "${{ inputs.model_dir || 'artifacts/model' }}" -name '*.safetensors') \
             > release/weights.sha256
           cosign sign-blob --yes release/weights.sha256 \
             --output-signature release/weights.sha256.sig \
             --output-certificate release/weights.sha256.crt
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: "${{ inputs.model_dir }}/*.safetensors"
+          subject-path: "${{ inputs.model_dir || 'artifacts/model' }}/*.safetensors"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: signed-release, path: release/ }
 
@@ -185,6 +267,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: signed-release, path: release/ }
       - name: Run receipt conformance vectors
         run: |
           python conformance/run_vectors.py \
@@ -197,22 +283,30 @@ jobs:
 
   # ── Final gate: publication_eligible === true, then publish ─────────────
   publish:
-    needs: conformance
+    needs: [conformance, evidence-admission]
     if: >-
       needs.conformance.result == 'success' &&
+      needs.evidence-admission.result == 'success' &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: hub-production           # requires required-approver review
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: signed-release, path: release/ }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: model-bom, path: bom/ }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: evidence-admission, path: release/ }
       - name: Assert publication gate
         run: |
           python - <<'PY'
           import json, sys
           m = json.load(open('release/run-manifest.json'))
+          ev = json.load(open('release/evidence-admission.json'))
           checks = {
             "heldout_eval_passed":  m["eval"]["heldout_passed"] is True,
             "refusal_no_regression": m["eval"]["refusal_no_regression"] is True,
@@ -221,6 +315,8 @@ jobs:
             "conformance_passed":    m["conformance"]["all_vectors_passed"] is True,
             "major_approved":        (m["release"]["kind"] != "major")
                                       or "${{ inputs.allow_major }}" == "yes",
+            "decontam_passed":       ev.get("decontam_passed") is True,
+            "redteam_digest_verified": ev.get("redteam_digest_verified") is True,
           }
           for k, v in checks.items():
             print(f"  {'PASS' if v else 'FAIL'}  {k}")
@@ -243,7 +339,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN_PUBLISH }}
         run: |
           huggingface-cli upload "${{ inputs.model_repo }}" \
-            "${{ inputs.model_dir }}" . \
+            "${{ inputs.model_dir || 'artifacts/model' }}" . \
             --commit-message "release $(git rev-parse --short $GITHUB_SHA) · held-out passed · gate green"
           huggingface-cli upload "${{ inputs.model_repo }}" release/README.md README.md
       - name: Anchor publication receipt on-chain (SZL ledger)
