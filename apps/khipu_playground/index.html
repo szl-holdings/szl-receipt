@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Khipu — the receipt playground | SZL Holdings</title>
+<style>
+:root{--bg:#05060c;--panel:rgba(13,20,36,.85);--neon:#22d3ee;--gold:#e8c36a;--ok:#34d399;--txt:#e2e8f0;--dim:#94a3b8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace}
+.wrap{max-width:900px;margin:0 auto;padding:30px 20px 60px}
+h1{font-size:26px;letter-spacing:.08em;margin-bottom:4px}
+h1 b{background:linear-gradient(90deg,#22d3ee,#e8c36a);-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--dim);font-size:13px;margin-bottom:24px;line-height:1.7}
+.card{background:var(--panel);border:1px solid rgba(148,163,184,.15);border-radius:14px;padding:20px;margin-bottom:16px}
+.card h2{font-size:11px;letter-spacing:.2em;color:var(--neon);margin-bottom:12px;text-transform:uppercase}
+textarea{width:100%;background:rgba(5,8,16,.7);color:var(--txt);border:1px solid rgba(148,163,184,.25);border-radius:10px;padding:12px;font:inherit;font-size:13px;resize:vertical;min-height:70px}
+button{font:inherit;font-size:13px;cursor:pointer;background:var(--neon);color:#05060c;border:none;border-radius:18px;padding:9px 22px;font-weight:700;margin-top:10px}
+button:hover{background:#7ce7f5}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:rgba(5,8,16,.7);border-radius:10px;padding:14px;font-size:11.5px;line-height:1.7;max-height:340px;overflow:auto}
+.kv{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);padding:5px 0;border-bottom:1px dashed rgba(148,163,184,.14)}
+.kv b{color:var(--txt)}
+footer{margin-top:22px;color:#8b9bb8;font-size:11px;line-height:1.8}
+a{color:var(--neon);text-decoration:none}
+.hint{font-size:11px;color:#5a6a85;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1><b>KHIPU</b> — the receipt playground</h1>
+<p class="sub">The most-downloaded SZL model family is named for the receipts layer. This playground shows what a khipu IS: a tamper-evident, hash-chained record of a claim — generated live in your browser, no server, no trust required. Type anything, tie it to the chain, watch the proof appear.</p>
+
+<div class="card">
+<h2>1. Your claim</h2>
+<textarea id="claim" placeholder="Type any claim, decision, or record - e.g. 'The model scored 3/6 on the abstention battery at 2026-11-12T03:00Z'">The model scored 3/6 on the abstention battery, measured on the estate's own A6000.</textarea>
+<button onclick="tie()">TIE IT TO THE CHAIN</button>
+<p class="hint">Everything below is computed locally, in your browser, from the text above. Change one character and re-run: every digest changes. That is tamper-evidence.</p>
+</div>
+
+<div class="card">
+<h2>2. The receipt</h2>
+<div id="out" style="display:none">
+<div class="kv"><span>claim (canonical bytes)</span><b id="nbytes">-</b></div>
+<div class="kv"><span>body_sha256</span><b id="sha">-</b></div>
+<div class="kv"><span>prev (chain head)</span><b id="prev">GENESIS</b></div>
+<div class="kv"><span>chain digest (sha256 of prev+body)</span><b id="chain">-</b></div>
+<div class="kv"><span>timestamp (UTC)</span><b id="ts">-</b></div>
+<div class="kv"><span>truth tier</span><b>MEASURED (you just measured it)</b></div>
+<pre id="json"></pre>
+</div>
+</div>
+
+<div class="card">
+<h2>3. Why this matters</h2>
+<p class="sub" style="margin-bottom:0">A claim without a receipt is an assertion. A claim with a receipt is evidence. The SZL estate runs on the second kind: every training run, every measurement, every deployment, every failure — hash-chained, public, verifiable offline. The models are the interesting part; the proof is the product.</p>
+</div>
+
+<footer>
+See the real chain: <a href="https://huggingface.co/datasets/SZLHOLDINGS/frontier-54-runs">the receipts</a> ·
+<a href="https://szlholdings-szl-receipts-chain.hf.space">the explorer</a> ·
+The governed layer: <a href="https://a-11-oy.com">a-11-oy.com</a> ·
+The SDK: <a href="https://pypi.org/project/szl/">pip install szl</a><br/>
+Khipu demo — pure client-side SHA-256 (the same primitive the chain uses). No data leaves your browser.
+</footer>
+</div>
+<script>
+async function sha256hex(s){
+  const d = new TextEncoder().encode(s);
+  const h = await crypto.subtle.digest("SHA-256", d);
+  return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+let PREV = "GENESIS";
+async function tie(){
+  const claim = document.getElementById("claim").value;
+  const ts = new Date().toISOString().replace(/\.\d+Z$/,"Z");
+  const canonical = JSON.stringify({claim, ts}, null, 0);
+  const sha = await sha256hex(canonical);
+  const chain = await sha256hex(PREV + sha);
+  document.getElementById("nbytes").textContent = canonical.length + " bytes";
+  document.getElementById("sha").textContent = sha;
+  document.getElementById("prev").textContent = PREV === "GENESIS" ? "GENESIS (start your own chain)" : PREV.slice(0,24)+"…";
+  document.getElementById("chain").textContent = chain;
+  document.getElementById("ts").textContent = ts;
+  const rec = {schema:"szl.khipu/v1", claim, ts, body_sha256: sha, prev: PREV, chain_digest: chain, tier:"MEASURED", note:"playground receipt - computed client-side; the estate chain uses the same primitive with server-side signing"};
+  document.getElementById("json").textContent = JSON.stringify(rec, null, 2);
+  document.getElementById("out").style.display = "block";
+  PREV = chain;
+}
+tie();
+</script>
+</body>
+</html>

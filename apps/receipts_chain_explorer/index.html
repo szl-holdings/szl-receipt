@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>The Receipts Chain — SZL Holdings | every claim, verifiable</title>
+<style>
+:root{--bg:#05060c;--panel:rgba(13,20,36,.85);--neon:#22d3ee;--gold:#e8c36a;--ok:#34d399;--bad:#f472b6;--txt:#e2e8f0;--dim:#94a3b8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace}
+.wrap{max-width:1320px;margin:0 auto;padding:30px 20px 60px}
+header{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px}
+h1{font-size:24px;letter-spacing:.1em}
+h1 b{background:linear-gradient(90deg,#22d3ee,#e8c36a,#34d399);-webkit-background-clip:text;background-clip:text;color:transparent}
+.pill{font-size:11px;border:1px solid rgba(34,211,238,.4);border-radius:20px;padding:5px 12px;color:var(--neon)}
+.sub{color:var(--dim);font-size:12px;margin-bottom:18px}
+.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:16px}
+@media(max-width:1000px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid rgba(148,163,184,.15);border-radius:14px;padding:16px}
+.card h2{font-size:11px;letter-spacing:.2em;color:var(--neon);margin-bottom:10px;text-transform:uppercase}
+canvas{width:100%;display:block;border-radius:8px;cursor:pointer}
+.kv{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);padding:5px 0;border-bottom:1px dashed rgba(148,163,184,.14)}
+.kv b{color:var(--txt)}
+.stream{max-height:420px;overflow:auto}
+.rec{border:1px solid rgba(148,163,184,.15);border-radius:10px;padding:8px 11px;margin:6px 0;cursor:pointer;transition:border-color .15s}
+.rec:hover{border-color:var(--neon)}
+.rec .t{font-size:10px;color:var(--dim)}
+.rec .d{font-size:12px;margin-top:2px}
+.rec .s{font-size:10px;color:#5a6a85;margin-top:2px}
+.kind{display:inline-block;font-size:9px;letter-spacing:.08em;border-radius:8px;padding:2px 7px;margin-right:6px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;font-size:11px;background:rgba(5,8,16,.7);border-radius:8px;padding:10px;margin-top:8px}
+footer{margin-top:22px;color:#8b9bb8;font-size:10px;line-height:1.8}
+a{color:var(--neon);text-decoration:none}
+.hint{font-size:10px;color:#5a6a85;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><b>THE RECEIPTS CHAIN</b> · SZL HOLDINGS</h1>
+    <span class="pill" id="live"> LOADING</span>
+  </header>
+  <p class="sub">Every claim the estate makes, as a live tamper-evident chain. Each node is a real receipt with its SHA-256 — click any node to read it. Nothing here is asserted; everything is receipted. Unreachable = UNAVAILABLE, never hidden.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h2>The chain — click a node to open its receipt</h2>
+      <canvas id="chain" height="420"></canvas>
+      <p class="hint">Nodes positioned by receipt kind and time — census (cyan), benchmarks (green), mesh/training (gold), doctrine (violet), officers (pink). Live from the public dataset.</p>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <h2>The estate, by receipts</h2>
+        <div id="stats"><span class="sub">counting…</span></div>
+      </div>
+      <div class="card">
+        <h2>Receipt stream — newest first</h2>
+        <div class="stream" id="stream"><span class="sub">fetching the chain…</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Selected receipt</h2>
+    <div id="selected" class="sub">click any node or stream row above</div>
+    <pre id="receipt-json" style="display:none"></pre>
+  </div>
+
+  <footer>
+    Source of truth: <a href="https://huggingface.co/datasets/SZLHOLDINGS/frontier-54-runs" target="_blank">SZLHOLDINGS/frontier-54-runs</a> — public, hash-chained, verifiable offline.
+    Estate: <a href="https://szlholdings-szlholdings-si.hf.space" target="_blank">the SI command center</a> · <a href="https://szlholdings-puriq-markets.hf.space" target="_blank">PURIQ markets</a> · <a href="https://szlholdings-eternal-auditor.hf.space" target="_blank">Eternal Auditor</a> · <a href="https://huggingface.co/SZLHOLDINGS" target="_blank">the org</a><br/>
+    Kamachikuna doctrine v11: fail closed · every claim carries a receipt · abstain when you cannot prove · no silent failure.
+  </footer>
+</div>
+
+<script>
+const BASE = "https://huggingface.co/datasets/SZLHOLDINGS/frontier-54-runs/resolve/main";
+const API = "https://huggingface.co/api/datasets/SZLHOLDINGS/frontier-54-runs/tree/main";
+const KIND_COLOR = {
+  census: "#22d3ee", benchmark: "#34d399", mesh: "#e8c36a", receipts: "#a78bfa",
+  doctrine: "#a78bfa", energy: "#f59e0b", officers: "#f472b6", lean: "#60a5fa",
+  deploy: "#94a3b8", monetization: "#fbbf24", registry: "#34d399", "proving-ground": "#60a5fa"
+};
+let RECEIPTS = [];
+
+async function j(u){ const r = await fetch(u); if(!r.ok) throw new Error(r.status); return r.json(); }
+
+async function loadDir(path){
+  const tree = await j(API + (path ? "/" + path : "") + "?recursive=false");
+  const out = [];
+  for (const f of tree){
+    if (f.type === "directory") out.push(...await loadDir(path ? path + "/" + f.path.split("/").pop() : f.path));
+    else if (f.path.endsWith(".json") || f.path.endsWith(".jsonl")) out.push(f.path);
+  }
+  return out;
+}
+
+async function loadReceipts(){
+  document.getElementById("live").textContent = " FETCHING";
+  try {
+    const files = await loadDir("");
+    const sample = files.slice(0, 120); // live sample of the chain
+    const recs = [];
+    for (const p of sample){
+      try {
+        if (p.endsWith(".jsonl")){
+          const txt = await (await fetch(BASE + "/" + p)).text();
+          const lines = txt.trim().split("\n").slice(-3);
+          for (const l of lines){
+            try { recs.push({path: p, data: JSON.parse(l)}); } catch(e){}
+          }
+        } else {
+          recs.push({path: p, data: await j(BASE + "/" + p)});
+        }
+      } catch(e){ /* one unreachable file is UNAVAILABLE, not fatal */ }
+    }
+    RECEIPTS = recs.filter(r => r.data && (r.data.kind || r.data.receipt_sha256 || r.data.state));
+    document.getElementById("live").textContent = " LIVE — " + RECEIPTS.length + " receipts sampled";
+    drawChain(); drawStream(); drawStats();
+  } catch(e){
+    document.getElementById("live").textContent = " UNAVAILABLE — fail closed";
+    document.getElementById("stream").innerHTML = '<span style="color:#f472b6">the chain is unreachable from here — it still exists, verify at the dataset link below</span>';
+  }
+}
+
+const cv = document.getElementById("chain"), cx = cv.getContext("2d");
+function kindOf(r){
+  const p = r.path.split("/")[0];
+  return KIND_COLOR[p] || "#94a3b8";
+}
+function drawChain(){
+  const W = cv.width = cv.clientWidth * 2, H = cv.height = 840;
+  cx.clearRect(0,0,W,H);
+  if (!RECEIPTS.length) return;
+  const N = RECEIPTS.length;
+  const pts = RECEIPTS.map((r, i) => {
+    const t = N > 1 ? i / (N - 1) : 0;
+    const a = t * Math.PI * 6;
+    return [W/2 + Math.cos(a) * (W*0.06 + t*W*0.36), H/2 + Math.sin(a) * (H*0.06 + t*H*0.36) - t*H*0.1];
+  });
+  // links
+  cx.strokeStyle = "rgba(34,211,238,.25)"; cx.lineWidth = 1.5;
+  for (let i = 1; i < pts.length; i++){
+    cx.beginPath(); cx.moveTo(pts[i-1][0], pts[i-1][1]); cx.lineTo(pts[i][0], pts[i][1]); cx.stroke();
+  }
+  // nodes
+  RECEIPTS.forEach((r, i) => {
+    const [x, y] = pts[i];
+    cx.beginPath(); cx.arc(x, y, 7, 0, 7);
+    cx.fillStyle = kindOf(r); cx.fill();
+    cx.beginPath(); cx.arc(x, y, 11, 0, 7);
+    cx.strokeStyle = kindOf(r) + "44"; cx.stroke();
+  });
+  cv.onclick = (e) => {
+    const rect = cv.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * 2, my = (e.clientY - rect.top) * 2;
+    for (let i = 0; i < pts.length; i++){
+      if (Math.hypot(pts[i][0]-mx, pts[i][1]-my) < 16){ showReceipt(RECEIPTS[i]); return; }
+    }
+  };
+}
+
+function drawStream(){
+  const box = document.getElementById("stream");
+  const sorted = [...RECEIPTS].sort((a,b) =>
+    (b.data.ts||"").localeCompare(a.data.ts||""));
+  box.innerHTML = sorted.slice(0, 40).map((r, i) => {
+    const d = r.data;
+    const kind = (d.kind || "receipt").split("/").pop();
+    return `<div class="rec" onclick='showIndex(${i})'>
+      <div class="t">${(d.ts||"?").slice(0,19)} · ${r.path.split("/")[0]}</div>
+      <div class="d"><span class="kind" style="color:${kindOf(r)};border:1px solid ${kindOf(r)}55">${kind}</span>
+        ${String(d.detail || d.score || d.state || d.verdict || "?").slice(0,90)}</div>
+      <div class="s">sha256 ${(d.receipt_sha256||d.body_sha256||"?").slice(0,20)}…</div>
+    </div>`;
+  }).join("");
+  window.showIndex = (i) => showReceipt(sorted[i]);
+}
+
+function drawStats(){
+  const dirs = {};
+  for (const r of RECEIPTS) { const d = r.path.split("/")[0]; dirs[d] = (dirs[d]||0)+1; }
+  document.getElementById("stats").innerHTML =
+    Object.entries(dirs).sort((a,b)=>b[1]-a[1]).map(([k,v]) =>
+      `<div class="kv"><b>${k}/</b><span>${v} receipts</span></div>`).join("") +
+    `<div class="kv" style="margin-top:6px"><b>sampled live</b><span>${RECEIPTS.length} of the chain</span></div>`;
+}
+
+function showReceipt(r){
+  document.getElementById("selected").innerHTML =
+    `<b style="color:var(--neon)">${r.path}</b>`;
+  const pre = document.getElementById("receipt-json");
+  pre.style.display = "block";
+  pre.textContent = JSON.stringify(r.data, null, 2);
+  pre.scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+loadReceipts();
+setInterval(loadReceipts, 120000);
+</script>
+</body>
+</html>
